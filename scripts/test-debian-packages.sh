@@ -108,9 +108,59 @@ fi
   echo "missing QuadRF apps.d descriptor" >&2
   exit 1
 }
-grep -Eq '"open": "https://[a-z0-9.-]+\.local:9443/"' \
-    /usr/share/quadrf/apps.d/quadrf-meshtasticd.json || {
+apps_json=/usr/share/quadrf/apps.d/quadrf-meshtasticd.json
+grep -Eq '"open": "https://[a-z0-9.-]+\.local:9443/"' "$apps_json" || {
   echo "apps.d descriptor must open the Meshtastic web UI on this unit :9443" >&2
+  exit 1
+}
+grep -Fq '"id": "quadrf-mesh"' "$apps_json" || {
+  echo "apps.d descriptor must keep id quadrf-mesh" >&2
+  exit 1
+}
+grep -Fq '"service": "quadrf-meshtasticd.service"' "$apps_json" || {
+  echo "apps.d descriptor must keep service quadrf-meshtasticd.service" >&2
+  exit 1
+}
+grep -Fq '"exclusive": true' "$apps_json" || {
+  echo "apps.d descriptor must stay exclusive" >&2
+  exit 1
+}
+grep -Fq '"ready_port": 9443' "$apps_json" || {
+  echo "apps.d descriptor must keep ready_port 9443" >&2
+  exit 1
+}
+grep -Fq 'meshtasticd-quadrf' "$apps_json" && grep -Fq 'quadrf-lora-phy' "$apps_json" || {
+  echo "apps.d descriptor must list meshtasticd-quadrf and quadrf-lora-phy" >&2
+  exit 1
+}
+launch=/usr/libexec/quadrf-meshtasticd-launch
+grep -Fq /etc/quadrf/tls/fullchain.pem "$launch" || {
+  echo "launch script must prefer the appliance TLS fullchain" >&2
+  exit 1
+}
+grep -Fq /etc/quadrf/tls/privkey.pem "$launch" || {
+  echo "launch script must prefer the appliance TLS privkey" >&2
+  exit 1
+}
+grep -Fq 'openssl req -x509' "$launch" || {
+  echo "launch script must keep a self-signed TLS fallback" >&2
+  exit 1
+}
+grep -Fq 'x11_active' "$launch" || {
+  echo "launch script must skip the monitor when X11 is absent" >&2
+  exit 1
+}
+apply=/usr/lib/quadrf/apply.d/47-meshtasticd
+grep -Fq /etc/quadrf/tls/fullchain.pem "$apply" || {
+  echo "apply hook must refresh ssl/ from the appliance fullchain" >&2
+  exit 1
+}
+grep -Fq 'try-restart quadrf-meshtasticd.service' "$apply" || {
+  echo "apply hook must reload meshtasticd after a cert refresh" >&2
+  exit 1
+}
+grep -qx 'TryExec=meshtasticd-quadrf' "$desktop" || {
+  echo "desktop entry is missing TryExec=meshtasticd-quadrf" >&2
   exit 1
 }
 [[ -f /usr/share/meshtasticd/web/index.html ]] || {

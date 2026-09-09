@@ -67,34 +67,53 @@ esac
 mdns="$(/usr/libexec/quadrf-mesh-mdns)"
 cert="$state_dir/ssl/certificate.pem"
 key="$state_dir/ssl/private_key.pem"
+appliance_cert=/etc/quadrf/tls/fullchain.pem
+appliance_key=/etc/quadrf/tls/privkey.pem
 for arg in "$@"; do
     case "$arg" in
         --no-window) QUADRF_MESH_NO_WINDOW=1 ;;
     esac
 done
 
-if [ ! -s "$key" ] || [ ! -s "$cert" ] ||
+# Prefer the appliance CA so :9443 matches the control-panel trust store.
+# Copy (do not symlink): privkey.pem is often root-only, and meshtasticd
+# reads the files under StateDirectory with mode 0600.
+if [ -s "$appliance_cert" ] && [ -s "$appliance_key" ]; then
+    if [ ! -s "$cert" ] || [ ! -s "$key" ] \
+            || ! cmp -s "$appliance_cert" "$cert" \
+            || ! cmp -s "$appliance_key" "$key"; then
+        install -m 0600 "$appliance_cert" "$cert"
+        install -m 0600 "$appliance_key" "$key"
+    fi
+elif [ ! -s "$key" ] || [ ! -s "$cert" ] ||
         ! openssl x509 -noout -subject -in "$cert" 2>/dev/null | grep -Fq "$mdns"; then
     openssl req -x509 -nodes -newkey rsa:2048 -days 365 \
         -keyout "$key" \
         -out "$cert" \
         -subj "/CN=${mdns}" \
         -addext "subjectAltName=DNS:${mdns}" >/dev/null 2>&1
+    chmod 0600 "$key" "$cert"
 fi
 
+x11_active() {
+    # Abstract or filesystem display :1. Service PrivateTmp hides /tmp.
+    grep -q '/tmp/.X11-unix/X1' /proc/net/unix 2>/dev/null
+}
+
+# Monitor is optional. Headless / missing X11 must not abort meshtasticd.
 if [ "${QUADRF_MESH_NO_WINDOW:-0}" != "1" ] &&
         command -v quadrf-mesh-monitor >/dev/null 2>&1 &&
         ! pidof quadrf-mesh-monitor >/dev/null 2>&1; then
     if [ -f /dev/shm/quadrf-mesh-no-window ]; then
         rm -f /dev/shm/quadrf-mesh-no-window
-    else
+    elif x11_active; then
         user="${QUADRF_USER:-dietpi}"
-        runuser -u "$user" -- env \
+        ( runuser -u "$user" -- env \
             DISPLAY=:1 \
             HOME="/home/$user" \
             XAUTHORITY="/home/$user/.Xauthority" \
             SDL_VIDEODRIVER=x11 \
-            /usr/bin/quadrf-mesh-monitor >/dev/null 2>&1 &
+            /usr/bin/quadrf-mesh-monitor >/dev/null 2>&1 || true ) &
     fi
 fi
 

@@ -1,13 +1,17 @@
 #!/bin/sh
 # SPDX-FileCopyrightText: 2026 Roy C. Gross
 # SPDX-License-Identifier: Apache-2.0
-# Point the control-page launcher at this unit's mDNS name, and drop a
-# web-UI cert whose CN no longer matches after a hostname change.
+# Point the control-page launcher at this unit's mDNS name. Refresh the
+# web-UI cert from the appliance CA when present; otherwise drop a
+# self-signed cert whose CN no longer matches after a hostname change.
 set -eu
 
 json=/usr/share/quadrf/apps.d/quadrf-meshtasticd.json
-cert=/var/lib/quadrf-meshtasticd/ssl/certificate.pem
-key=/var/lib/quadrf-meshtasticd/ssl/private_key.pem
+state_dir=/var/lib/quadrf-meshtasticd
+cert="$state_dir/ssl/certificate.pem"
+key="$state_dir/ssl/private_key.pem"
+appliance_cert=/etc/quadrf/tls/fullchain.pem
+appliance_key=/etc/quadrf/tls/privkey.pem
 mdns="$(/usr/libexec/quadrf-mesh-mdns)"
 url="https://${mdns}:9443/"
 
@@ -19,8 +23,21 @@ if [ -f "$json" ]; then
     mv "$tmp" "$json"
 fi
 
-if [ -s "$cert" ] && ! openssl x509 -noout -subject -in "$cert" 2>/dev/null |
+reload_mesh() {
+    systemctl try-restart quadrf-meshtasticd.service 2>/dev/null || true
+}
+
+if [ -s "$appliance_cert" ] && [ -s "$appliance_key" ]; then
+    mkdir -p "$state_dir/ssl"
+    if [ ! -s "$cert" ] || [ ! -s "$key" ] \
+            || ! cmp -s "$appliance_cert" "$cert" \
+            || ! cmp -s "$appliance_key" "$key"; then
+        install -m 0600 "$appliance_cert" "$cert"
+        install -m 0600 "$appliance_key" "$key"
+        reload_mesh
+    fi
+elif [ -s "$cert" ] && ! openssl x509 -noout -subject -in "$cert" 2>/dev/null |
         grep -Fq "$mdns"; then
     rm -f "$cert" "$key"
-    systemctl try-restart quadrf-meshtasticd.service 2>/dev/null || true
+    reload_mesh
 fi
