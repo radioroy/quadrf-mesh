@@ -1,3 +1,10 @@
+quadrf-mesh (0.1.3-1) experimental; urgency=medium
+
+  * mesh: Identify stations by callsign from quadrf.conf
+  * debian: Rename apps.d launcher id from quadrf-mesh to mesh
+
+ -- Roy C. Gross <61633595+radioroy@users.noreply.github.com>  Wed, 09 Sep 2026 14:50:59 -0700
+
 quadrf-mesh (0.1.2-1) experimental; urgency=medium
 
   * ci: Avoid SC2015 in debian package test script
