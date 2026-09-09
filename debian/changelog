@@ -1,3 +1,9 @@
+quadrf-mesh (0.1.1-1) experimental; urgency=medium
+
+  * debian: Prefer appliance TLS certs for meshtasticd HTTPS
+
+ -- Roy C. Gross <61633595+radioroy@users.noreply.github.com>  Wed, 09 Sep 2026 09:37:09 -0700
+
 quadrf-mesh (0.1.0-1) experimental; urgency=medium
 
   * Prepare the first clean, reproducible public-source release.
