@@ -1,0 +1,81 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  quality:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Install build and policy tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes cmake g++ libfftw3-dev libsdl2-dev libsoapysdr-dev libssl-dev ninja-build pkg-config shellcheck
+      - name: Scan tracked content
+        run: ./scripts/check-sensitive-content.sh
+      - name: Reject committed/generated executables
+        run: test ! -e vendor/meshtasticd-quadrf
+      - name: Check shell
+        run: shellcheck scripts/*.sh debian/quadrf-meshtasticd-launch debian/quadrf-mesh-mdns debian/quadrf-mesh-open debian/47-meshtasticd debian/quadrf-meshtasticd.postinst debian/tests/installed-help
+      - name: Build scalar targets
+        run: cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=RelWithDebInfo -DPHY_USE_NEON=OFF -DPHY_JTAG_PATH=/usr/bin/quadrf-jtag
+      - name: Run offline tests and frozen protocol vectors
+        run: cmake --build build --parallel && ctest --test-dir build --output-on-failure
+
+  package-arm64-trixie:
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 150
+    env:
+      BUILD_IMAGE: quadrf-mesh-trixie-arm64:${{ github.sha }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Build Debian Trixie arm64 toolchain image
+        run: docker build --pull --platform linux/arm64 --file ci/trixie-arm64.Dockerfile --tag "$BUILD_IMAGE" .
+      - name: Prepare immutable architecture-neutral source inputs
+        run: |
+          docker run --rm --platform linux/arm64 \
+            --volume "$PWD:/work/quadrf-mesh" --workdir /work/quadrf-mesh \
+            "$BUILD_IMAGE" bash -lc \
+            'git config --global --add safe.directory /work/quadrf-mesh && ./scripts/prepare-dependencies.sh'
+      - name: Build source and arm64 packages in Trixie without network
+        run: |
+          mkdir -p "${{ runner.temp }}/quadrf-output"
+          docker run --rm --network none --platform linux/arm64 \
+            --volume "${{ runner.temp }}/quadrf-output:/work" \
+            --volume "$PWD:/work/quadrf-mesh" --workdir /work/quadrf-mesh \
+            "$BUILD_IMAGE" bash -lc \
+            'git config --global --add safe.directory /work/quadrf-mesh && ./scripts/build-debian.sh'
+      - name: Lint in Debian Trixie
+        run: |
+          docker run --rm --network none --platform linux/arm64 \
+            --volume "${{ runner.temp }}/quadrf-output:/packages:ro" \
+            "$BUILD_IMAGE" bash -lc 'lintian --display-info /packages/quadrf-mesh_*.changes'
+      - name: Install and purge in clean Debian Trixie arm64
+        run: |
+          docker run --rm --network none --platform linux/arm64 \
+            --volume "$PWD:/source:ro" \
+            --volume "${{ runner.temp }}/quadrf-output:/packages:ro" \
+            "$BUILD_IMAGE" /source/scripts/test-debian-packages.sh /packages
+      - uses: actions/upload-artifact@v4
+        with:
+          name: quadrf-mesh-trixie-arm64
+          if-no-files-found: error
+          path: |
+            ${{ runner.temp }}/quadrf-output/quadrf-mesh_*.buildinfo
+            ${{ runner.temp }}/quadrf-output/quadrf-mesh_*.changes
+            ${{ runner.temp }}/quadrf-output/quadrf-mesh_*.debian.tar.*
+            ${{ runner.temp }}/quadrf-output/quadrf-mesh_*.dsc
+            ${{ runner.temp }}/quadrf-output/quadrf-mesh_*.orig.tar.*
+            ${{ runner.temp }}/quadrf-output/quadrf-mesh_*.deb
+            ${{ runner.temp }}/quadrf-output/quadrf-lora-phy_*.deb
+            ${{ runner.temp }}/quadrf-output/quadrf-meshtasticd_*.deb

@@ -1,0 +1,16 @@
+Description: Pin the native SCons build tool
+ PlatformIO's native platform declares a mutable SCons range. Override it with
+ the exact reviewed tool version.
+Forwarded: not-needed
+Last-Update: 2026-08-20
+--- a/variants/native/portduino/platformio.ini
++++ b/variants/native/portduino/platformio.ini
+@@ -1,5 +1,8 @@
+ [native_base]
+ extends = portduino_base
++; Resolve the platform default mutable ~4.40801.0 range exactly.
++platform_packages =
++  platformio/tool-scons@4.40801.0
+ build_flags = ${portduino_base.build_flags} -I variants/native/portduino
+   -I /usr/include
+ board = cross_platform

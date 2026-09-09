@@ -1,0 +1,60 @@
+Description: Instantiate QuadRFRadio for use_quadrf the same way SimRadio
+ is instantiated for use_simradio, and skip the RadioLib SPI HAL setup for
+ both soft radios instead of only SimRadio. QuadRFRadio is copied from the adjacent backend directory and needs
+ no chip driver underneath it.
+Author: Roy C. Gross <61633595+radioroy@users.noreply.github.com>
+Origin: other
+Forwarded: no
+Applies-to: meshtastic/firmware @ 54e0d8d0ab2ff56b3a9ce967e53f79e49af560fb
+--- a/src/mesh/RadioInterface.cpp
++++ b/src/mesh/RadioInterface.cpp
+@@ -24,6 +24,7 @@
+ 
+ #ifdef ARCH_PORTDUINO
+ #include "platform/portduino/PortduinoGlue.h"
++#include "platform/portduino/QuadRFRadio.h"
+ #include "platform/portduino/SimRadio.h"
+ #include "platform/portduino/USBHal.h"
+ #endif
+@@ -264,6 +265,8 @@ std::unique_ptr<RadioInterface> initLoRa()
+             return std::unique_ptr<RadioInterface>(new LLCC68Interface(hal, cs, irq, rst, busy));
+         case use_simradio:
+             return std::unique_ptr<RadioInterface>(new SimRadio);
++        case use_quadrf:
++            return std::unique_ptr<RadioInterface>(new QuadRFRadio(portduino_config.quadrf_socket));
+         default:
+             assert(0); // shouldn't happen
+             return std::unique_ptr<RadioInterface>(nullptr);
+@@ -272,18 +275,23 @@ std::unique_ptr<RadioInterface> initLoRa()
+ 
+     LOG_DEBUG("Activate %s radio on SPI port %s", portduino_config.loraModules[portduino_config.lora_module].c_str(),
+               portduino_config.lora_spi_dev.c_str());
+-    if (portduino_config.lora_spi_dev == "ch341") {
+-        RadioLibHAL = ch341Hal;
++    if (portduino_config.lora_module == use_simradio || portduino_config.lora_module == use_quadrf) {
++        // Soft radios do not touch SPI / RadioLib HAL.
++        rIf = loraModuleInterface(nullptr, RADIOLIB_NC, RADIOLIB_NC, RADIOLIB_NC, RADIOLIB_NC);
+     } else {
+-        if (RadioLibHAL != nullptr) {
+-            delete RadioLibHAL;
+-            RadioLibHAL = nullptr;
++        if (portduino_config.lora_spi_dev == "ch341") {
++            RadioLibHAL = ch341Hal;
++        } else {
++            if (RadioLibHAL != nullptr) {
++                delete RadioLibHAL;
++                RadioLibHAL = nullptr;
++            }
++            RadioLibHAL = new LockingArduinoHal(SPI, loraSpiSettings);
+         }
+-        RadioLibHAL = new LockingArduinoHal(SPI, loraSpiSettings);
++        rIf = loraModuleInterface((LockingArduinoHal *)RadioLibHAL, portduino_config.lora_cs_pin.pin,
++                                  portduino_config.lora_irq_pin.pin, portduino_config.lora_reset_pin.pin,
++                                  portduino_config.lora_busy_pin.pin);
+     }
+-    rIf =
+-        loraModuleInterface((LockingArduinoHal *)RadioLibHAL, portduino_config.lora_cs_pin.pin, portduino_config.lora_irq_pin.pin,
+-                            portduino_config.lora_reset_pin.pin, portduino_config.lora_busy_pin.pin);
+ 
+     if (!rIf->init()) {
+         LOG_WARN("No %s radio", portduino_config.loraModules[portduino_config.lora_module].c_str());

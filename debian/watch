@@ -1,0 +1,3 @@
+version=4
+opts=filenamemangle=s/.+\/v?(@ANY_VERSION@)\.tar\.gz/quadrf-mesh-$1\.tar\.gz/ \
+  https://github.com/radioroy/quadrf-mesh/tags .*/v?(@ANY_VERSION@)\.tar\.gz

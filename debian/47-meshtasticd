@@ -1,0 +1,26 @@
+#!/bin/sh
+# SPDX-FileCopyrightText: 2026 Roy C. Gross
+# SPDX-License-Identifier: Apache-2.0
+# Point the control-page launcher at this unit's mDNS name, and drop a
+# web-UI cert whose CN no longer matches after a hostname change.
+set -eu
+
+json=/usr/share/quadrf/apps.d/quadrf-meshtasticd.json
+cert=/var/lib/quadrf-meshtasticd/ssl/certificate.pem
+key=/var/lib/quadrf-meshtasticd/ssl/private_key.pem
+mdns="$(/usr/libexec/quadrf-mesh-mdns)"
+url="https://${mdns}:9443/"
+
+if [ -f "$json" ]; then
+    tmp="$(mktemp)"
+    sed -E "s|\"open\": \"https://[^[:space:]\"]+:9443/\"|\"open\": \"${url}\"|" \
+        "$json" >"$tmp"
+    chmod 644 "$tmp"
+    mv "$tmp" "$json"
+fi
+
+if [ -s "$cert" ] && ! openssl x509 -noout -subject -in "$cert" 2>/dev/null |
+        grep -Fq "$mdns"; then
+    rm -f "$cert" "$key"
+    systemctl try-restart quadrf-meshtasticd.service 2>/dev/null || true
+fi

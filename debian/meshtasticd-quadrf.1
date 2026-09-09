@@ -1,0 +1,19 @@
+.TH MESHTASTICD-QUADRF 1 "August 2026" "quadrf-mesh 0.1.0" "User Commands"
+.SH NAME
+meshtasticd-quadrf \- Meshtastic daemon with an out-of-tree QuadRF adapter
+.SH SYNOPSIS
+.B meshtasticd-quadrf
+.RI [ meshtasticd-options ]
+.SH DESCRIPTION
+This GPL-3.0-only Meshtastic-derived daemon uses the QuadRF Air-IPC adapter.
+The packaged systemd service invokes it through a state-preparation wrapper.
+.SH FILES
+.I /etc/meshtasticd/config.yaml
+and
+.I /etc/default/quadrf-meshtasticd
+configure the service. Runtime state is under
+.IR /var/lib/quadrf-meshtasticd .
+.SH DISCLAIMER
+This is an independent project, not an official Meshtastic support channel.
+.SH AUTHOR
+Roy C. Gross and Meshtastic contributors.

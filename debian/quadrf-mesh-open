@@ -1,0 +1,31 @@
+#!/bin/sh
+# SPDX-FileCopyrightText: 2026 Roy C. Gross
+# SPDX-License-Identifier: Apache-2.0
+set -eu
+
+no_window=0
+for arg in "$@"; do
+    case "$arg" in
+        --no-window) no_window=1 ;;
+        -h|--help)
+            echo "usage: quadrf-mesh-open [--no-window]"
+            exit 0
+            ;;
+    esac
+done
+
+[ "$no_window" -eq 1 ] && touch /dev/shm/quadrf-mesh-no-window
+
+if ! systemctl is-active --quiet quadrf-meshtasticd.service; then
+    sudo /usr/sbin/quadrf-app start quadrf-mesh 2>/dev/null || sudo systemctl start quadrf-meshtasticd.service 2>/dev/null || true
+elif [ "$no_window" -eq 0 ] && command -v quadrf-mesh-monitor >/dev/null 2>&1 &&
+        ! pidof quadrf-mesh-monitor >/dev/null 2>&1; then
+    DISPLAY=:1 SDL_VIDEODRIVER=x11 quadrf-mesh-monitor >/dev/null 2>&1 &
+fi
+
+url="https://$(/usr/libexec/quadrf-mesh-mdns):9443/"
+if command -v xdg-open >/dev/null 2>&1; then
+    exec xdg-open "$url"
+fi
+echo "open $url after starting quadrf-meshtasticd.service" >&2
+exit 1

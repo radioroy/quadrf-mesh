@@ -1,0 +1,3 @@
+# Preserve upstream patch whitespace
+integrations/meshtastic/patches/backend/0004-native-pin-tool-scons.patch -whitespace
+integrations/meshtastic/patches/backend/0005-native-prune-ambiguous-sensor-dependencies.patch -whitespace

@@ -1,0 +1,13 @@
+debian/tmp/usr/bin/meshtasticd-quadrf usr/bin
+debian/tmp/etc/meshtasticd/config.yaml etc/meshtasticd
+debian/tmp/usr/share/meshtasticd usr/share
+debian/quadrf-meshtasticd-launch usr/libexec
+debian/quadrf-mesh-mdns usr/libexec
+debian/quadrf-mesh-open usr/libexec
+debian/47-meshtasticd usr/lib/quadrf/apply.d
+debian/io.github.radioroy.QuadRFMesh.desktop usr/share/applications
+debian/io.github.radioroy.QuadRFMesh.svg usr/share/icons/hicolor/scalable/apps
+debian/io.github.radioroy.QuadRFMesh.metainfo.xml usr/share/metainfo
+debian/quadrf-meshtasticd.json usr/share/quadrf/apps.d
+integrations/meshtastic/README.md usr/share/doc/quadrf-meshtasticd
+integrations/meshtastic/patches usr/share/doc/quadrf-meshtasticd

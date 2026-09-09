@@ -1,0 +1,6 @@
+# Minimal Meshtastic Portduino configuration for the out-of-tree QuadRF backend.
+# Start quadrf-lora-phy first; package services use the same runtime path.
+---
+Lora:
+  Module: quadrf
+  Socket: /run/quadrf/phy.sock

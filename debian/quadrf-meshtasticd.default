@@ -1,0 +1,6 @@
+QUADRF_MESHTASTICD_API_PORT=4403
+# Set to 1 to start mesh without the operator-desktop monitor window.
+# QUADRF_MESH_NO_WINDOW=1
+# Set a stable, unique locally administered MAC here to override the default
+# derived from the hardware serial or machine-id.
+# QUADRF_MESHTASTICD_MAC=02:00:00:00:00:01

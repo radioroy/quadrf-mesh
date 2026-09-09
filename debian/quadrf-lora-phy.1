@@ -1,0 +1,24 @@
+.TH QUADRF-LORA-PHY 1 "August 2026" "quadrf-mesh 0.1.0" "User Commands"
+.SH NAME
+quadrf-lora-phy \- experimental QuadRF LoRa-compatible PHY and Air-IPC daemon
+.SH SYNOPSIS
+.B quadrf-lora-phy
+.RI [ options ]
+.SH DESCRIPTION
+.B quadrf-lora-phy
+owns the QuadRF radio, modulates and demodulates air frames, and serves
+Air-IPC version 1 on a local Unix socket. Invoked without a mode flag it
+uses FPGA digital loopback. The packaged systemd unit defaults to
+.BR --ota .
+.SH OPTIONS
+Run
+.B quadrf-lora-phy --help
+for the complete option list. The production socket default is
+.IR /run/quadrf/phy.sock .
+.SH FILES
+.I /etc/default/quadrf-lora-phy
+contains service defaults.
+.SH WARNING
+The operator is responsible for lawful RF configuration and operation.
+.SH AUTHOR
+Roy C. Gross.

@@ -1,0 +1,4 @@
+vendor/meshtastic-firmware-patched.tar.xz
+vendor/meshtastic-web.tar
+vendor/platformio-sources.tar.xz
+vendor/platformio-wheelhouse.tar.xz

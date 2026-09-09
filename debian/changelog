@@ -1,0 +1,8 @@
+quadrf-mesh (0.1.0-1) experimental; urgency=medium
+
+  * Prepare the first clean, reproducible public-source release.
+  * Install Meshtastic config as a file and verify corresponding-source on
+    Debian slim images.
+  * Register QuadRF Mesh as a desktop and control-page application.
+
+ -- Roy C. Gross <61633595+radioroy@users.noreply.github.com>  Thu, 20 Aug 2026 00:00:00 -0700

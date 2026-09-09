@@ -1,0 +1,57 @@
+#!/usr/bin/make -f
+# SPDX-FileCopyrightText: 2026 Roy C. Gross
+# SPDX-License-Identifier: Apache-2.0
+
+export DH_VERBOSE = 1
+export DEB_BUILD_MAINT_OPTIONS = hardening=+all reproducible=+fixfilepath
+export BUILD_EPOCH ?= $(or $(SOURCE_DATE_EPOCH),$(shell date +%s))
+export TZ = UTC
+export PYTHONHASHSEED = 0
+
+%:
+	dh $@ --buildsystem=cmake+ninja
+
+override_dh_auto_configure:
+	./scripts/verify-vendor.sh
+	dh_auto_configure -- \
+		-DPHY_JTAG_PATH=/usr/bin/quadrf-jtag \
+		-DPHY_USE_NEON=ON \
+		-DBUILD_TESTING=ON
+
+override_dh_auto_build:
+	dh_auto_build -- quadrf-lora-phy quadrf-mesh-monitor air_ipc_offline_test \
+		meshtastic_air_ipc_consumer_test bridge_offline_test lora_offline_test \
+		chirp_offline
+	./scripts/build-meshtasticd-offline.sh \
+		"$(CURDIR)/debian/build-meshtasticd" \
+		"$(CURDIR)/debian/meshtasticd-quadrf"
+
+override_dh_auto_test:
+	dh_auto_test
+
+override_dh_auto_install:
+	dh_auto_install --destdir=debian/tmp
+	install -Dm755 debian/meshtasticd-quadrf \
+		debian/tmp/usr/bin/meshtasticd-quadrf
+	install -Dm755 tools/ble/quadrf_ble_bridge.py \
+		debian/tmp/usr/bin/quadrf-ble-bridge
+	install -Dm644 debian/quadrf-meshtasticd.config.yaml \
+		debian/tmp/etc/meshtasticd/config.yaml
+	install -d -m755 debian/tmp/usr/share/meshtasticd/web
+	tar -xf vendor/meshtastic-web.tar -C debian/tmp/usr/share/meshtasticd/web
+	# The Meshtastic Web release tarball is precompressed for nginx
+	# gzip_static. meshtasticd's ulfius handler looks up the uncompressed
+	# name (index.html, hashed JS/CSS), so expand every .gz in place.
+	find debian/tmp/usr/share/meshtasticd/web -type f -name '*.gz' -print0 | \
+		xargs -0 -r gunzip -f
+	test -f debian/tmp/usr/share/meshtasticd/web/index.html
+
+override_dh_auto_clean:
+	dh_auto_clean
+	rm -rf debian/build-meshtasticd debian/meshtasticd-quadrf
+
+override_dh_missing:
+	dh_missing --fail-missing
+
+override_dh_installsystemd:
+	dh_installsystemd --no-enable --no-start

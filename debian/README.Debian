@@ -1,0 +1,50 @@
+quadrf-mesh for Debian
+----------------------
+
+Both systemd units are installed disabled by default. You can start them from
+the QuadRF Applications launcher, or with:
+
+  sudo systemctl start quadrf-lora-phy quadrf-meshtasticd
+
+`quadrf-lora-phy` starts in OTA mode (`QUADRF_LORA_PHY_MODE=--ota` in `/etc/default/quadrf-lora-phy`).
+Set `QUADRF_LORA_PHY_MODE=--digital` for FPGA digital loopback.
+
+Starting the mesh automatically opens the QuadRF Mesh Monitor desktop window
+and makes the Meshtastic web UI available at:
+
+  https://<QUADRF_HOSTNAME>.local:9443/
+
+The monitor lists every CRC-passing PHY decode, including this unit's own
+transmissions (PHY journal ``echo-drop``). Those frames are not delivered
+to Meshtastic.
+
+That HTTPS port is the web UI only. Phone apps and the Meshtastic CLI use
+PhoneAPI on TCP 4403, not 9443.
+
+Radio configuration
+-------------------
+
+`quadrf-lora-phy` is authoritative for radio hardware settings. The frequency
+(`QUADRF_LORA_PHY_FREQ`) and preset (`QUADRF_LORA_PHY_PRESET`) set in `/etc/default/quadrf-lora-phy`
+control the RF frontend.
+
+Meshtastic must be configured to match those settings:
+
+  Preset mapping:
+    shortturbo     SHORT_TURBO (default)
+    shortfast      SHORT_FAST
+
+For example, with the default PHY settings (5800 MHz, SHORT_TURBO):
+
+  meshtastic --host 127.0.0.1:4403 --set lora.override_frequency 5800
+  meshtastic --host 127.0.0.1:4403 --set lora.modem_preset SHORT_TURBO
+  meshtastic --host 127.0.0.1:4403 --set lora.region <YOUR_REGION>
+
+Node identity
+-------------
+
+On first launch, the daemon derives a node MAC from the QuadRF hardware serial
+and stores it in `/var/lib/meshtasticd/identity.env`. If you clone an OS image to
+another board, it detects the serial mismatch and generates a fresh identity for
+the new hardware. You can also specify an explicit MAC by setting
+`QUADRF_MESHTASTICD_MAC` in `/etc/default/quadrf-meshtasticd`.

@@ -1,0 +1,4 @@
+0001-nodeinfo-populate-hw-model-and-macaddr-on-reply.patch
+0002-nodedb-default-long-name-quadrf.patch
+0003-webserver-spa-fallback.patch
+0004-phoneapi-per-client-queue-fanout.patch

@@ -1,0 +1,17 @@
+[Unit]
+Description=QuadRF Meshtastic BLE GATT Bridge
+Documentation=https://github.com/radioroy/quadrf-mesh
+After=network.target bluetooth.service quadrf-meshtasticd.service
+PartOf=quadrf-meshtasticd.service
+Wants=bluetooth.service
+
+[Service]
+Type=simple
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/usr/bin/quadrf-ble-bridge
+Restart=on-failure
+RestartSec=5
+User=root
+
+[Install]
+WantedBy=quadrf-meshtasticd.service

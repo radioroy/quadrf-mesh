@@ -1,0 +1,13 @@
+{
+  "apps": [
+    {
+      "id": "quadrf-mesh",
+      "desktop_entry": "io.github.radioroy.QuadRFMesh.desktop",
+      "service": "quadrf-meshtasticd.service",
+      "binaries": ["meshtasticd-quadrf", "quadrf-lora-phy"],
+      "exclusive": true,
+      "open": "https://quadrf.local:9443/",
+      "ready_port": 9443
+    }
+  ]
+}

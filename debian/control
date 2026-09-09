@@ -1,0 +1,87 @@
+Source: quadrf-mesh
+Section: hamradio
+Priority: optional
+Maintainer: Roy C. Gross <61633595+radioroy@users.noreply.github.com>
+Build-Depends:
+ cmake,
+ debhelper-compat (= 13),
+ file,
+ libfftw3-dev,
+ libbluetooth-dev,
+ libgpiod-dev,
+ libi2c-dev,
+ liborcania-dev,
+ libsdl2-dev,
+ libsoapysdr-dev,
+ libssl-dev,
+ libusb-1.0-0-dev,
+ libulfius-dev,
+ libuv1-dev,
+ libyaml-cpp-dev,
+ libyder-dev,
+ ninja-build,
+ pkgconf,
+ python3,
+ python3-pip,
+ python3-venv,
+ xz-utils,
+Standards-Version: 4.7.2
+Rules-Requires-Root: no
+Homepage: https://github.com/radioroy/quadrf-mesh
+
+Package: quadrf-lora-phy
+Architecture: arm64
+Conflicts: quadrf-phy
+Replaces: quadrf-phy
+Provides: quadrf-phy
+Depends:
+ bluez,
+ bluez-firmware,
+ python3,
+ python3-dbus,
+ python3-gi,
+ quadrf-fpga (>= 1.0.0),
+ quadrf-soapy (>= 1.0.1),
+ ${misc:Depends},
+ ${shlibs:Depends},
+Description: experimental QuadRF LoRa-compatible PHY daemon
+ Owns the QuadRF SoapySDR/FPGA front end and chirp-spread-spectrum modem,
+ then exposes Meshtastic air frames and receive metadata through Air-IPC v1
+ at /run/quadrf/phy.sock.
+ .
+ This independent experimental package is not an official Scale RF or
+ Meshtastic product or support channel.
+
+Package: quadrf-meshtasticd
+Architecture: arm64
+Depends:
+ openssl,
+ quadrf-lora-phy (= ${binary:Version}),
+ ${misc:Depends},
+ ${shlibs:Depends},
+Recommends: python3-meshtastic, xdg-utils
+Description: experimental Meshtastic daemon with QuadRF Air-IPC adapter
+ Provides a Meshtastic-derived native daemon, the out-of-tree QuadRF
+ RadioInterface adapter, and a checksum-locked Meshtastic Web client. It
+ communicates with quadrf-lora-phy over /run/quadrf/phy.sock and packages the
+ out-of-tree QuadRF backend adapter.
+ The package registers a QuadRF desktop entry and control-page application.
+ .
+ This independent experimental package is not an official Scale RF or
+ Meshtastic product or support channel.
+
+Package: quadrf-mesh
+Architecture: all
+Depends:
+ bluez,
+ bluez-firmware,
+ python3-dbus,
+ python3-gi,
+ quadrf-meshtasticd (>= ${source:Version}),
+ ${misc:Depends},
+Description: metapackage for QuadRF Mesh application
+ Metapackage pulling in the QuadRF LoRa-compatible PHY daemon, the Meshtastic
+ daemon adapter, desktop launcher, and web control panel integration.
+ .
+ This independent experimental package is not an official Scale RF or
+ Meshtastic product or support channel.

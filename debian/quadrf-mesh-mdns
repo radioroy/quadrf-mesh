@@ -1,0 +1,13 @@
+#!/bin/sh
+# SPDX-FileCopyrightText: 2026 Roy C. Gross
+# SPDX-License-Identifier: Apache-2.0
+# Print this unit's mDNS hostname (QUADRF_HOSTNAME.local).
+set -eu
+host=quadrf
+if [ -r /usr/share/quadrf/functions.sh ]; then
+    # shellcheck disable=SC1091
+    . /usr/share/quadrf/functions.sh
+    quadrf_load_conf
+    host="${QUADRF_HOSTNAME:-quadrf}"
+fi
+printf '%s.local\n' "$host"

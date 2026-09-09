@@ -1,0 +1,19 @@
+# Meshtastic Portduino configuration for the out-of-tree QuadRF backend.
+---
+Lora:
+  Module: quadrf
+  Socket: /run/quadrf/phy.sock
+
+Logging:
+  LogLevel: info
+
+Webserver:
+  Port: 9443
+  RootPath: /usr/share/meshtasticd/web
+  SSLKey: /var/lib/quadrf-meshtasticd/ssl/private_key.pem
+  SSLCert: /var/lib/quadrf-meshtasticd/ssl/certificate.pem
+
+General:
+  MaxNodes: 200
+  MaxMessageQueue: 100
+  APIPort: 4403

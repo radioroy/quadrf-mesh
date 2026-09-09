@@ -1,0 +1,18 @@
+Description: Optionally default a fresh node long name to "QuadRF %04x".
+ This distribution-specific display identity is disabled by default and is
+ not required by the radio backend.
+Author: Roy C. Gross <61633595+radioroy@users.noreply.github.com>
+Origin: other
+Forwarded: no
+Applies-to: meshtastic/firmware @ 54e0d8d0ab2ff56b3a9ce967e53f79e49af560fb
+--- a/src/mesh/NodeDB.cpp
++++ b/src/mesh/NodeDB.cpp
+@@ -1128,7 +1128,7 @@ void NodeDB::installDefaultDeviceState()
+ #ifdef USERPREFS_CONFIG_OWNER_LONG_NAME
+     snprintf(owner.long_name, sizeof(owner.long_name), (const char *)USERPREFS_CONFIG_OWNER_LONG_NAME);
+ #else
+-    snprintf(owner.long_name, sizeof(owner.long_name), "Meshtastic %04x", getNodeNum() & 0x0ffff);
++    snprintf(owner.long_name, sizeof(owner.long_name), "QuadRF %04x", getNodeNum() & 0x0ffff);
+ #endif
+ #ifdef USERPREFS_CONFIG_OWNER_SHORT_NAME
+     snprintf(owner.short_name, sizeof(owner.short_name), (const char *)USERPREFS_CONFIG_OWNER_SHORT_NAME);

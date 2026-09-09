@@ -1,0 +1,14 @@
+#!/bin/sh
+# SPDX-FileCopyrightText: 2026 Roy C. Gross
+# SPDX-License-Identifier: Apache-2.0
+set -e
+
+case "$1" in
+    configure)
+        if [ -x /usr/lib/quadrf/apply.d/47-meshtasticd ]; then
+            /usr/lib/quadrf/apply.d/47-meshtasticd
+        fi
+        ;;
+esac
+
+#DEBHELPER#

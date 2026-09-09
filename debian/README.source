@@ -1,0 +1,13 @@
+quadrf-mesh Debian packaging
+============================
+
+Building the packages:
+
+  ./scripts/prepare-dependencies.sh
+  ./scripts/build-debian.sh
+
+The first script fetches the pinned Meshtastic firmware source, Web UI
+assets, and PlatformIO dependencies into vendor/.
+
+The second script packages the source archive and invokes dpkg-buildpackage
+to produce quadrf-lora-phy and quadrf-meshtasticd binaries for the target system.

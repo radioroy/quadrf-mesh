@@ -1,0 +1,85 @@
+Description: Prune unused native sensor inputs with incomplete license grants
+ The headless QuadRF service does not expose Portduino environmental-sensor
+ telemetry, I2C motion sensing, or INA/MAX17048 power telemetry. Exclude those
+ features and the unused environmental dependency group. Make the optional
+ seesaw rotary backend compile only when its header is available, so the
+ unresolved seesaw package and its display dependency are not build inputs.
+Forwarded: not-needed
+Last-Update: 2026-08-20
+--- a/variants/native/portduino.ini
++++ b/variants/native/portduino.ini
+@@ -19,7 +19,6 @@ lib_deps =
+   ${env.lib_deps}
+   ${networking_base.lib_deps}
+   ${networking_extra.lib_deps}
+   ${radiolib_base.lib_deps}
+-  ${environmental_base.lib_deps}
+   # renovate: datasource=custom.pio depName=rweather/Crypto packageName=rweather/library/Crypto
+   rweather/Crypto@0.4.0
+@@ -29,11 +28,7 @@ lib_deps =
+   lovyan03/LovyanGFX@1.2.21
+   ; # renovate: datasource=git-refs depName=libch341-spi-userspace packageName=https://github.com/pine64/libch341-spi-userspace gitBranch=main
+   https://github.com/pine64/libch341-spi-userspace/archive/2e5ff751d0c39667993df672cb683740ed5c9394.zip
+-  # renovate: datasource=custom.pio depName=adafruit/Adafruit seesaw Library packageName=adafruit/library/Adafruit seesaw Library
+-	adafruit/Adafruit seesaw Library@1.7.9
+   # renovate: datasource=git-refs depName=RAK12034-BMX160 packageName=https://github.com/RAKWireless/RAK12034-BMX160 gitBranch=main
+   https://github.com/RAKWireless/RAK12034-BMX160/archive/dcead07ffa267d3c906e9ca4a1330ab989e957e2.zip
+-  # renovate: datasource=github-tags depName=Adafruit_BME680 packageName=adafruit/Adafruit_BME680
+-  https://github.com/adafruit/Adafruit_BME680/archive/refs/tags/2.0.6.zip
+ 
+ ; Cross-platform build flags shared between native (Linux) and native-macos builds.
+@@ -49,5 +42,9 @@ build_flags_common =
+   ${arduino_base.build_flags}
+   -D ARCH_PORTDUINO
++  -D MESHTASTIC_EXCLUDE_ENVIRONMENTAL_SENSOR=1
++  -D MESHTASTIC_EXCLUDE_POWER_TELEMETRY=1
++  -D MESHTASTIC_EXCLUDE_ACCELEROMETER=1
++  -D MESHTASTIC_EXCLUDE_MAGNETOMETER=1
+   -fPIC
+   -Isrc/platform/portduino
+   -DRADIOLIB_EEPROM_UNSUPPORTED
+--- a/src/input/InputBroker.cpp
++++ b/src/input/InputBroker.cpp
+@@ -6,8 +6,10 @@
+ #include "modules/ExternalNotificationModule.h"
+ 
+ #if ARCH_PORTDUINO
+ #include "input/LinuxInputImpl.h"
++#if __has_include("Adafruit_seesaw.h")
+ #include "input/SeesawRotary.h"
++#endif
+ #include "platform/portduino/PortduinoGlue.h"
+ #endif
+ 
+@@ -400,5 +402,6 @@ void InputBroker::setup()
+ #if ARCH_PORTDUINO
+     if (config.display.displaymode != meshtastic_Config_DisplayConfig_DisplayMode_COLOR) {
++#if __has_include("Adafruit_seesaw.h")
+         if (portduino_config.i2cdev != "") {
+             seesawRotary = new SeesawRotary("SeesawRotary");
+             if (!seesawRotary->init()) {
+@@ -407,6 +410,7 @@ void InputBroker::setup()
+                 seesawRotary = nullptr;
+             }
+         }
++#endif
+ #ifdef __linux__
+         // Linux evdev keyboard input only — macOS has no <linux/input.h>.
+         aLinuxInputImpl = new LinuxInputImpl();
+--- a/src/input/SeesawRotary.h
++++ b/src/input/SeesawRotary.h
+@@ -1,5 +1,5 @@
+ #pragma once
+-#ifdef ARCH_PORTDUINO
++#if defined(ARCH_PORTDUINO) && __has_include("Adafruit_seesaw.h")
+ 
+ #include "Adafruit_seesaw.h"
+ #include "InputBroker.h"
+--- a/src/input/SeesawRotary.cpp
++++ b/src/input/SeesawRotary.cpp
+@@ -1,4 +1,4 @@
+-#ifdef ARCH_PORTDUINO
++#if defined(ARCH_PORTDUINO) && __has_include("Adafruit_seesaw.h")
+ #include "SeesawRotary.h"
+ #include "input/InputBroker.h"
+ 

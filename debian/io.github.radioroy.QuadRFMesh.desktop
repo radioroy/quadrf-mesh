@@ -1,0 +1,14 @@
+# SPDX-FileCopyrightText: 2026 Roy C. Gross
+# SPDX-License-Identifier: Apache-2.0
+[Desktop Entry]
+Type=Application
+Version=1.0
+Name=QuadRF Mesh
+Comment=Experimental Meshtastic daemon and LoRa-compatible PHY for the QuadRF
+Exec=/usr/libexec/quadrf-mesh-open
+TryExec=meshtasticd-quadrf
+Icon=io.github.radioroy.QuadRFMesh
+Terminal=false
+Categories=HamRadio;Network;Science;
+Keywords=quadrf;lora;mesh;meshtastic;sdr;radio;
+X-QuadRF-Desktop=true

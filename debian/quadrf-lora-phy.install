@@ -1,0 +1,7 @@
+debian/tmp/usr/bin/quadrf-lora-phy usr/bin
+debian/tmp/usr/bin/quadrf-mesh-monitor usr/bin
+debian/tmp/usr/bin/quadrf-ble-bridge usr/bin
+debian/io.github.radioroy.QuadRFMeshMonitor.desktop usr/share/applications
+debian/quadrf-ble-bridge.service usr/lib/systemd/system
+docs/air-ipc-v1.md usr/share/doc/quadrf-lora-phy
+include/quadrf/air_ipc.hpp usr/share/doc/quadrf-lora-phy/examples

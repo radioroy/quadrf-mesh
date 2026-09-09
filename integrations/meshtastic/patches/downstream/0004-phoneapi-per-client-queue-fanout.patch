@@ -1,0 +1,233 @@
+Description: Implement per-client packet queue fanout in PhoneAPI and MeshService.
+ Multiple concurrent clients (e.g. mobile phone app on TCP port 4403 and Web UI
+ on HTTP port 9443) each receive independent copies of packets destined for the
+ phone, preventing packet starvation where one client steals all incoming packets.
+ Note: relates directly to upstream Meshtastic issue #9776 / PR #9627.
+Author: Roy C. Gross <61633595+radioroy@users.noreply.github.com>
+Origin: other
+Forwarded: no
+Applies-to: meshtastic/firmware @ 54e0d8d0ab2ff56b3a9ce967e53f79e49af560fb
+--- a/src/mesh/MeshService.h	2026-06-23 09:26:52.000000000 -0700
++++ b/src/mesh/MeshService.h	2026-09-04 02:13:39.965774407 -0700
+@@ -9,6 +9,8 @@
+ #include "MeshRadio.h"
+ #include "MeshTypes.h"
+ #include "Observer.h"
++#include "concurrency/Lock.h"
++#include <vector>
+ #ifdef ARCH_PORTDUINO
+ #include "PointerQueue.h"
+ #else
+@@ -28,6 +30,8 @@
+ extern Allocator<meshtastic_MqttClientProxyMessage> &mqttClientProxyMessagePool;
+ extern Allocator<meshtastic_ClientNotification> &clientNotificationPool;
+ 
++class PhoneAPI;
++
+ /**
+  * Top level app for this service.  keeps the mesh, the radio config and the queue of received packets.
+  *
+@@ -117,6 +121,12 @@
+     /// last few packets if needs to.
+     meshtastic_MeshPacket *getForPhone() { return toPhoneQueue.dequeuePtr(0); }
+ 
++    // Per-client fanout registration (ref upstream Meshtastic issue #9776)
++    concurrency::Lock phoneClientsLock;
++    std::vector<PhoneAPI *> phoneClients;
++    void registerPhoneClient(PhoneAPI *client);
++    void unregisterPhoneClient(PhoneAPI *client);
++
+     /// Allows the bluetooth handler to free packets after they have been sent
+     void releaseToPool(meshtastic_MeshPacket *p) { packetPool.release(p); }
+ 
+--- a/src/mesh/MeshService.cpp	2026-06-23 09:26:52.000000000 -0700
++++ b/src/mesh/MeshService.cpp	2026-09-04 02:13:51.395469456 -0700
+@@ -7,6 +7,7 @@
+ #include "../concurrency/Periodic.h"
+ #include "BluetoothCommon.h" // needed for updateBatteryLevel, FIXME, eventually when we pull mesh out into a lib we shouldn't be whacking bluetooth from here
+ #include "MeshService.h"
++#include "PhoneAPI.h"
+ #include "MessageStore.h"
+ #include "NodeDB.h"
+ #include "PowerFSM.h"
+@@ -316,28 +317,72 @@
+ #endif
+ #endif
+ 
+-    if (toPhoneQueue.numFree() == 0) {
+-        if (p->decoded.portnum == meshtastic_PortNum_TEXT_MESSAGE_APP ||
+-            p->decoded.portnum == meshtastic_PortNum_RANGE_TEST_APP) {
+-            LOG_WARN("ToPhone queue is full, discard oldest");
+-            meshtastic_MeshPacket *d = toPhoneQueue.dequeuePtr(0);
+-            if (d)
+-                releaseToPool(d);
+-        } else {
+-            LOG_WARN("ToPhone queue is full, drop packet");
+-            releaseToPool(p);
+-            fromNum++; // Make sure to notify observers in case they are reconnected so they can get the packets
+-            return;
++    // Per-client fanout patch (ref upstream Meshtastic issue #9776)
++    bool queued_to_any = false;
++    {
++        concurrency::LockGuard guard(&phoneClientsLock);
++        for (PhoneAPI *client : phoneClients) {
++            if (!client || !client->isInterestedInPackets()) {
++                continue;
++            }
++            meshtastic_MeshPacket *copy = packetPool.allocCopy(*p);
++            if (copy) {
++                client->enqueueClientPacket(copy);
++                queued_to_any = true;
++            } else {
++                LOG_WARN("sendToPhone: packetPool full, failed to allocCopy for client");
++            }
+         }
+     }
+ 
+-    if (toPhoneQueue.enqueue(p, 0) == false) {
+-        LOG_CRIT("Failed to queue a packet into toPhoneQueue!");
+-        abort();
++    if (!queued_to_any) {
++        if (toPhoneQueue.numFree() == 0) {
++            if (p->decoded.portnum == meshtastic_PortNum_TEXT_MESSAGE_APP ||
++                p->decoded.portnum == meshtastic_PortNum_RANGE_TEST_APP) {
++                LOG_WARN("ToPhone queue is full, discard oldest");
++                meshtastic_MeshPacket *d = toPhoneQueue.dequeuePtr(0);
++                if (d)
++                    releaseToPool(d);
++            } else {
++                LOG_WARN("ToPhone queue is full, drop packet");
++                releaseToPool(p);
++                fromNum++; // Make sure to notify observers in case they are reconnected so they can get the packets
++                return;
++            }
++        }
++
++        if (toPhoneQueue.enqueue(p, 0) == false) {
++            LOG_CRIT("Failed to queue a packet into toPhoneQueue!");
++            abort();
++        }
++    } else {
++        releaseToPool(p);
+     }
+     fromNum++;
+ }
+ 
++void MeshService::registerPhoneClient(PhoneAPI *client)
++{
++    concurrency::LockGuard guard(&phoneClientsLock);
++    for (PhoneAPI *c : phoneClients) {
++        if (c == client) return;
++    }
++    phoneClients.push_back(client);
++    LOG_INFO("registerPhoneClient: total active clients=%zu", phoneClients.size());
++}
++
++void MeshService::unregisterPhoneClient(PhoneAPI *client)
++{
++    concurrency::LockGuard guard(&phoneClientsLock);
++    for (auto it = phoneClients.begin(); it != phoneClients.end(); ++it) {
++        if (*it == client) {
++            phoneClients.erase(it);
++            LOG_INFO("unregisterPhoneClient: remaining active clients=%zu", phoneClients.size());
++            return;
++        }
++    }
++}
++
+ void MeshService::sendMqttMessageToClientProxy(meshtastic_MqttClientProxyMessage *m)
+ {
+     LOG_DEBUG("Send mqtt message on topic '%s' to client for proxy", m->topic);
+--- a/src/mesh/PhoneAPI.h	2026-06-23 09:26:52.000000000 -0700
++++ b/src/mesh/PhoneAPI.h	2026-09-04 02:13:59.853243334 -0700
+@@ -67,6 +67,10 @@
+     /// downloads it
+     meshtastic_MeshPacket *packetForPhone = NULL;
+ 
++    // Per-client packet queue (ref upstream Meshtastic issue #9776)
++    std::deque<meshtastic_MeshPacket *> clientPacketQueue;
++    concurrency::Lock clientQueueLock;
++
+     // file transfer packets destined for phone. Push it to the queue then free it.
+     meshtastic_XModem xmodemPacketForPhone = meshtastic_XModem_init_zero;
+ 
+@@ -109,6 +113,10 @@
+     // Unregisters our observer.  A closed connection **can** be reopened by calling init again.
+     virtual void close();
+ 
++    bool isInterestedInPackets() const { return state != STATE_SEND_NOTHING; }
++    void enqueueClientPacket(meshtastic_MeshPacket *p);
++    meshtastic_MeshPacket *getClientPacket();
++
+     /**
+      * Handle a ToRadio protobuf
+      * @return true true if a packet was queued for sending (so that caller can yield)
+--- a/src/mesh/PhoneAPI.cpp	2026-06-23 09:26:52.000000000 -0700
++++ b/src/mesh/PhoneAPI.cpp	2026-09-04 02:14:21.039675220 -0700
+@@ -64,6 +64,7 @@
+     if (!isConnected()) {
+         onConnectionChanged(true);
+         observe(&service->fromNumChanged);
++        service->registerPhoneClient(this);
+ #ifdef FSCom
+         observe(&xModem.packetReady);
+ #endif
+@@ -129,6 +130,19 @@
+         state = STATE_SEND_NOTHING;
+         resetReadIndex();
+         unobserve(&service->fromNumChanged);
++        if (service) {
++            service->unregisterPhoneClient(this);
++        }
++        {
++            concurrency::LockGuard guard(&clientQueueLock);
++            while (!clientPacketQueue.empty()) {
++                meshtastic_MeshPacket *p = clientPacketQueue.front();
++                clientPacketQueue.pop_front();
++                if (p && service) {
++                    service->releaseToPool(p);
++                }
++            }
++        }
+ #ifdef FSCom
+         unobserve(&xModem.packetReady);
+ #endif
+@@ -770,6 +784,8 @@
+ #endif
+ 
+         if (!packetForPhone)
++            packetForPhone = getClientPacket();
++        if (!packetForPhone)
+             packetForPhone = service->getForPhone();
+         hasPacket = !!packetForPhone;
+         return hasPacket;
+@@ -884,3 +900,29 @@
+ 
+     return timeout ? -1 : 0; // If we timed out, MeshService should stop iterating through observers as we just removed one
+ }
++
++void PhoneAPI::enqueueClientPacket(meshtastic_MeshPacket *p)
++{
++    concurrency::LockGuard guard(&clientQueueLock);
++    constexpr size_t kMaxClientQueue = 32;
++    if (clientPacketQueue.size() >= kMaxClientQueue) {
++        meshtastic_MeshPacket *oldest = clientPacketQueue.front();
++        clientPacketQueue.pop_front();
++        if (oldest && service) {
++            service->releaseToPool(oldest);
++        }
++        LOG_WARN("Client packet queue full, dropped oldest packet");
++    }
++    clientPacketQueue.push_back(p);
++}
++
+meshtastic_MeshPacket *PhoneAPI::getClientPacket()
++{
++    concurrency::LockGuard guard(&clientQueueLock);
++    if (clientPacketQueue.empty()) {
++        return NULL;
++    }
++    meshtastic_MeshPacket *p = clientPacketQueue.front();
++    clientPacketQueue.pop_front();
++    return p;
++}

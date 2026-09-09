@@ -1,0 +1,34 @@
+[Unit]
+Description=Experimental QuadRF LoRa-compatible PHY (Air-IPC)
+Documentation=https://github.com/radioroy/quadrf-mesh
+Requires=load-quadrf.service
+After=load-quadrf.service
+Conflicts=quadrf-datalink.service
+
+[Service]
+Type=simple
+EnvironmentFile=-/etc/default/quadrf-lora-phy
+RuntimeDirectory=quadrf
+RuntimeDirectoryMode=0755
+UMask=0022
+ExecStart=/usr/bin/quadrf-lora-phy ${QUADRF_LORA_PHY_MODE} \
+  --socket ${QUADRF_LORA_PHY_SOCKET} \
+  --preset ${QUADRF_LORA_PHY_PRESET} \
+  --freq ${QUADRF_LORA_PHY_FREQ} \
+  --tx-gain ${QUADRF_LORA_PHY_TX_GAIN} \
+  --rx-gain ${QUADRF_LORA_PHY_RX_GAIN} \
+  --amplitude ${QUADRF_LORA_PHY_AMPLITUDE} \
+  --tx-ant ${QUADRF_LORA_PHY_TX_ANT} \
+  --rx-ant ${QUADRF_LORA_PHY_RX_ANT} \
+  --rx-bw ${QUADRF_LORA_PHY_RX_BW} \
+  --tx-bw ${QUADRF_LORA_PHY_TX_BW}
+Restart=on-failure
+RestartSec=3
+TimeoutStopSec=8
+NoNewPrivileges=true
+ProtectHome=true
+ProtectSystem=strict
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

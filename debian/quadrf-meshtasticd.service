@@ -1,0 +1,26 @@
+[Unit]
+Description=Experimental Meshtastic daemon with QuadRF Air-IPC adapter
+Documentation=https://github.com/radioroy/quadrf-mesh
+Requires=quadrf-lora-phy.service
+After=quadrf-lora-phy.service network.target
+PropagatesStopTo=quadrf-lora-phy.service
+
+[Service]
+Type=simple
+EnvironmentFile=-/etc/quadrf/quadrf.conf
+EnvironmentFile=-/etc/default/quadrf-meshtasticd
+StateDirectory=quadrf-meshtasticd
+StateDirectoryMode=0700
+UMask=0077
+ExecStart=/usr/libexec/quadrf-meshtasticd-launch
+ExecStopPost=-/usr/bin/killall -q quadrf-mesh-monitor
+Restart=on-failure
+RestartSec=3
+NoNewPrivileges=true
+ProtectHome=read-only
+ProtectSystem=strict
+PrivateTmp=true
+ReadWritePaths=/var/lib/quadrf-meshtasticd /run/quadrf
+
+[Install]
+WantedBy=multi-user.target

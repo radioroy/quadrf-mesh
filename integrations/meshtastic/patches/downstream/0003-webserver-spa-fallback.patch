@@ -1,0 +1,74 @@
+Description: Optionally serve index.html for missing client-side routes in the
+ packaged web UI. This distribution-specific behavior is disabled by default
+ and is not required by the radio backend.
+Author: Roy C. Gross <61633595+radioroy@users.noreply.github.com>
+Origin: other
+Forwarded: no
+Applies-to: meshtastic/firmware @ 54e0d8d0ab2ff56b3a9ce967e53f79e49af560fb
+--- a/src/mesh/raspihttp/PiWebServer.cpp
++++ b/src/mesh/raspihttp/PiWebServer.cpp
+@@ -183,7 +183,7 @@ int callback_static_file(const struct _u_request *request, struct _u_response *r
+ 
+         file_path = msprintf("%s/%s", configWeb.files_path, file_requested);
+         real_path = realpath(file_path, NULL);
+-        if (0 == o_strncmp(configWeb.files_path, real_path, o_strlen(configWeb.files_path))) {
++        if (real_path != NULL && 0 == o_strncmp(configWeb.files_path, real_path, o_strlen(configWeb.files_path))) {
+             if (access(file_path, F_OK) != -1) {
+                 f = fopen(file_path, "rb");
+                 if (f) {
+@@ -205,13 +205,54 @@ int callback_static_file(const struct _u_request *request, struct _u_response *r
+                     }
+                 }
+             } else {
+-                if (configWeb.redirect_on_404 == NULL) {
++                // SPA fallback: serve index.html for client-side routes (e.g. /nodes refresh).
++                char *index_path = msprintf("%s/index.html", configWeb.files_path);
++                FILE *index_f = fopen(index_path, "rb");
++                o_free(index_path);
++                if (index_f) {
++                    fseek(index_f, 0, SEEK_END);
++                    length = ftell(index_f);
++                    fseek(index_f, 0, SEEK_SET);
++                    u_map_put(response->map_header, "Content-Type", "text/html");
++                    u_map_copy_into(response->map_header, &configWeb.map_header);
++                    if (ulfius_set_stream_response(response, 200, callback_static_file_stream,
++                                                   callback_static_file_stream_free, length, STATIC_FILE_CHUNK,
++                                                   index_f) != U_OK) {
++                        LOG_DEBUG("callback_static_file - SPA index fallback failed");
++                        fclose(index_f);
++                        ulfius_set_string_body_response(response, 404, "File not found");
++                    }
++                } else if (configWeb.redirect_on_404 == NULL) {
+                     ulfius_set_string_body_response(response, 404, "File not found");
+                 } else {
+                     ulfius_add_header_to_response(response, "Location", configWeb.redirect_on_404);
+                     response->status = 302;
+                 }
+             }
++        } else if (real_path == NULL) {
++                // SPA fallback: serve index.html for client-side routes (e.g. /nodes refresh).
++                char *index_path = msprintf("%s/index.html", configWeb.files_path);
++                FILE *index_f = fopen(index_path, "rb");
++                o_free(index_path);
++                if (index_f) {
++                    fseek(index_f, 0, SEEK_END);
++                    length = ftell(index_f);
++                    fseek(index_f, 0, SEEK_SET);
++                    u_map_put(response->map_header, "Content-Type", "text/html");
++                    u_map_copy_into(response->map_header, &configWeb.map_header);
++                    if (ulfius_set_stream_response(response, 200, callback_static_file_stream,
++                                                   callback_static_file_stream_free, length, STATIC_FILE_CHUNK,
++                                                   index_f) != U_OK) {
++                        LOG_DEBUG("callback_static_file - SPA index fallback failed");
++                        fclose(index_f);
++                        ulfius_set_string_body_response(response, 404, "File not found");
++                    }
++                } else if (configWeb.redirect_on_404 == NULL) {
++                    ulfius_set_string_body_response(response, 404, "File not found");
++                } else {
++                    ulfius_add_header_to_response(response, "Location", configWeb.redirect_on_404);
++                    response->status = 302;
++                }
+         } else {
+             if (configWeb.redirect_on_404 == NULL) {
+                 ulfius_set_string_body_response(response, 404, "File not found");

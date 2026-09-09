@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- SPDX-FileCopyrightText: 2026 Roy C. Gross -->
+<!-- SPDX-License-Identifier: MIT -->
+<component type="desktop-application">
+  <id>io.github.radioroy.QuadRFMesh</id>
+  <metadata_license>MIT</metadata_license>
+  <project_license>GPL-3.0-only</project_license>
+  <name>QuadRF Mesh</name>
+  <summary>Experimental Meshtastic daemon and LoRa-compatible PHY for the QuadRF</summary>
+  <description>
+    <p>QuadRF Mesh is an experimental Meshtastic daemon and LoRa-compatible PHY for QuadRF SDR hardware.</p>
+  </description>
+  <launchable type="desktop-id">io.github.radioroy.QuadRFMesh.desktop</launchable>
+  <provides>
+    <binary>meshtasticd-quadrf</binary>
+  </provides>
+  <url type="homepage">https://github.com/radioroy/quadrf-mesh</url>
+  <developer id="io.github.radioroy">
+    <name>Roy C. Gross</name>
+  </developer>
+  <content_rating type="oars-1.1"/>
+</component>

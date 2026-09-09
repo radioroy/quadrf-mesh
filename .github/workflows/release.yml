@@ -1,0 +1,85 @@
+name: Release packages
+
+on:
+  push:
+    tags:
+      - 'v*.*.*'
+
+permissions:
+  contents: read
+
+jobs:
+  inactive-on-prep:
+    if: github.repository != 'radioroy/quadrf-mesh'
+    runs-on: ubuntu-24.04
+    steps:
+      - run: echo "Release publishing is inactive until the public repository exists."
+
+  release:
+    if: github.repository == 'radioroy/quadrf-mesh'
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 150
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
+    env:
+      BUILD_IMAGE: quadrf-mesh-trixie-arm64:${{ github.sha }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Validate signed release identity
+        run: |
+          version="$(sed -n '1s/^quadrf-mesh (\([^)]*\)).*/\1/p' debian/changelog)"
+          test "$GITHUB_REF_NAME" = "v${version%%-*}"
+      - name: Build Debian Trixie arm64 toolchain image
+        run: docker build --pull --platform linux/arm64 --file ci/trixie-arm64.Dockerfile --tag "$BUILD_IMAGE" .
+      - name: Prepare immutable source inputs
+        run: |
+          docker run --rm --platform linux/arm64 \
+            --volume "$PWD:/work/quadrf-mesh" --workdir /work/quadrf-mesh \
+            "$BUILD_IMAGE" bash -lc \
+            'git config --global --add safe.directory /work/quadrf-mesh && ./scripts/prepare-dependencies.sh'
+      - name: Build source and binaries in Trixie without network
+        run: |
+          mkdir -p "$RUNNER_TEMP/quadrf-output"
+          docker run --rm --network none --platform linux/arm64 \
+            --volume "$RUNNER_TEMP/quadrf-output:/work" \
+            --volume "$PWD:/work/quadrf-mesh" --workdir /work/quadrf-mesh \
+            "$BUILD_IMAGE" bash -lc \
+            'git config --global --add safe.directory /work/quadrf-mesh && ./scripts/build-debian.sh'
+      - name: Lint, install, and purge in Trixie arm64
+        run: |
+          docker run --rm --network none --platform linux/arm64 \
+            --volume "$RUNNER_TEMP/quadrf-output:/packages:ro" "$BUILD_IMAGE" \
+            bash -lc 'lintian --display-info /packages/quadrf-mesh_*.changes'
+          docker run --rm --network none --platform linux/arm64 \
+            --volume "$PWD:/source:ro" --volume "$RUNNER_TEMP/quadrf-output:/packages:ro" \
+            "$BUILD_IMAGE" /source/scripts/test-debian-packages.sh /packages
+      - name: Create checksum manifest
+        run: |
+          cd "$RUNNER_TEMP/quadrf-output"
+          find . -maxdepth 1 -type f \( -name 'quadrf-mesh_*' -o -name 'quadrf-lora-phy_*.deb' -o -name 'quadrf-meshtasticd_*.deb' \) -print0 | sort -z | xargs -0 sha256sum > SHA256SUMS
+      # GitHub will not persist attestations on a user-owned private repo.
+      - uses: actions/attest-build-provenance@v2
+        if: github.event.repository.visibility == 'public'
+        with:
+          subject-path: |
+            ${{ runner.temp }}/quadrf-output/quadrf-lora-phy_*.deb
+            ${{ runner.temp }}/quadrf-output/quadrf-meshtasticd_*.deb
+            ${{ runner.temp }}/quadrf-output/quadrf-mesh_*.deb
+            ${{ runner.temp }}/quadrf-output/quadrf-mesh_*.dsc
+            ${{ runner.temp }}/quadrf-output/quadrf-mesh_*.orig.tar.*
+            ${{ runner.temp }}/quadrf-output/quadrf-mesh_*.debian.tar.*
+      - name: Publish immutable release assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" --verify-tag --generate-notes \
+            "$RUNNER_TEMP"/quadrf-output/quadrf-mesh_*.deb \
+            "$RUNNER_TEMP"/quadrf-output/quadrf-lora-phy_*.deb "$RUNNER_TEMP"/quadrf-output/quadrf-meshtasticd_*.deb \
+            "$RUNNER_TEMP"/quadrf-output/quadrf-mesh_*.dsc "$RUNNER_TEMP"/quadrf-output/quadrf-mesh_*.orig.tar.* \
+            "$RUNNER_TEMP"/quadrf-output/quadrf-mesh_*.debian.tar.* "$RUNNER_TEMP"/quadrf-output/quadrf-mesh_*.buildinfo \
+            "$RUNNER_TEMP"/quadrf-output/quadrf-mesh_*.changes \
+            "$RUNNER_TEMP"/quadrf-output/SHA256SUMS

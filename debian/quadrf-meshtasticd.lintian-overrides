@@ -1,0 +1,4 @@
+# First experimental upload; there is no Debian BTS bug to close.
+quadrf-meshtasticd: initial-upload-closes-no-bugs
+# Meshtastic web client font stylesheets reference standard external CDNs.
+quadrf-meshtasticd: privacy-breach-generic [usr/share/meshtasticd/web/index.html]

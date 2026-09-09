@@ -1,0 +1,105 @@
+#!/bin/sh
+# SPDX-FileCopyrightText: 2026 Roy C. Gross
+# SPDX-License-Identifier: Apache-2.0
+set -eu
+
+state_dir=/var/lib/quadrf-meshtasticd
+identity_file="$state_dir/identity.env"
+defaults_file=/etc/default/quadrf-meshtasticd
+umask 077
+mkdir -p "$state_dir/data" "$state_dir/ssl"
+
+hw_seed() {
+    if [ -r /proc/device-tree/serial-number ]; then
+        tr -d '\000' </proc/device-tree/serial-number
+    elif [ -r /etc/machine-id ]; then
+        sed -n '1p' /etc/machine-id
+    else
+        hostname
+    fi
+}
+
+derive_mac() {
+    # First 10 hex chars of sha256(seed) as 02:AA:BB:CC:DD:EE (locally administered).
+    suffix="$(printf '%s' "$1" | sha256sum | cut -c1-10 | sed 's/../&:/g;s/:$//' | tr 'a-f' 'A-F')"
+    printf '02:%s' "$suffix"
+}
+
+seed_hash() {
+    printf '%s' "$1" | sha256sum | cut -d' ' -f1
+}
+
+id_mac=""
+id_seed_hash=""
+if [ -f "$identity_file" ]; then
+    # shellcheck disable=SC1090
+    . "$identity_file"
+    id_mac="${QUADRF_MESHTASTICD_MAC:-}"
+    id_seed_hash="${QUADRF_MESHTASTICD_MAC_SEED_HASH:-}"
+    unset QUADRF_MESHTASTICD_MAC
+fi
+if [ -f "$defaults_file" ]; then
+    # Explicit administrator configuration has final precedence over the
+    # persisted generated identity.
+    # shellcheck disable=SC1090
+    . "$defaults_file"
+fi
+
+current_seed="$(hw_seed)"
+current_hash="$(seed_hash "$current_seed")"
+if [ -z "${QUADRF_MESHTASTICD_MAC:-}" ]; then
+    # Cloned images copy identity.env. Re-derive when the stored hardware
+    # fingerprint does not match this unit (missing hash counts as a mismatch).
+    if [ -n "$id_mac" ] && [ "$id_seed_hash" = "$current_hash" ]; then
+        QUADRF_MESHTASTICD_MAC="$id_mac"
+    else
+        QUADRF_MESHTASTICD_MAC="$(derive_mac "$current_seed")"
+    fi
+    printf 'QUADRF_MESHTASTICD_MAC=%s\nQUADRF_MESHTASTICD_MAC_SEED_HASH=%s\n' \
+        "$QUADRF_MESHTASTICD_MAC" "$current_hash" >"$identity_file"
+fi
+
+case "$QUADRF_MESHTASTICD_MAC" in
+    [0-9A-Fa-f][0-9A-Fa-f]:[0-9A-Fa-f][0-9A-Fa-f]:[0-9A-Fa-f][0-9A-Fa-f]:[0-9A-Fa-f][0-9A-Fa-f]:[0-9A-Fa-f][0-9A-Fa-f]:[0-9A-Fa-f][0-9A-Fa-f]) ;;
+    *) echo "invalid QUADRF_MESHTASTICD_MAC" >&2; exit 1 ;;
+esac
+
+mdns="$(/usr/libexec/quadrf-mesh-mdns)"
+cert="$state_dir/ssl/certificate.pem"
+key="$state_dir/ssl/private_key.pem"
+for arg in "$@"; do
+    case "$arg" in
+        --no-window) QUADRF_MESH_NO_WINDOW=1 ;;
+    esac
+done
+
+if [ ! -s "$key" ] || [ ! -s "$cert" ] ||
+        ! openssl x509 -noout -subject -in "$cert" 2>/dev/null | grep -Fq "$mdns"; then
+    openssl req -x509 -nodes -newkey rsa:2048 -days 365 \
+        -keyout "$key" \
+        -out "$cert" \
+        -subj "/CN=${mdns}" \
+        -addext "subjectAltName=DNS:${mdns}" >/dev/null 2>&1
+fi
+
+if [ "${QUADRF_MESH_NO_WINDOW:-0}" != "1" ] &&
+        command -v quadrf-mesh-monitor >/dev/null 2>&1 &&
+        ! pidof quadrf-mesh-monitor >/dev/null 2>&1; then
+    if [ -f /dev/shm/quadrf-mesh-no-window ]; then
+        rm -f /dev/shm/quadrf-mesh-no-window
+    else
+        user="${QUADRF_USER:-dietpi}"
+        runuser -u "$user" -- env \
+            DISPLAY=:1 \
+            HOME="/home/$user" \
+            XAUTHORITY="/home/$user/.Xauthority" \
+            SDL_VIDEODRIVER=x11 \
+            /usr/bin/quadrf-mesh-monitor >/dev/null 2>&1 &
+    fi
+fi
+
+exec /usr/bin/meshtasticd-quadrf \
+    -c /etc/meshtasticd/config.yaml \
+    -d "$state_dir/data" \
+    -h "$QUADRF_MESHTASTICD_MAC" \
+    -p "${QUADRF_MESHTASTICD_API_PORT:-4403}"

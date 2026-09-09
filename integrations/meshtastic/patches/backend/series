@@ -1,0 +1,6 @@
+0000-add-quadrf-backend-sources.patch
+0001-portduino-add-quadrf-soft-radio-module.patch
+0002-portduino-parse-lora-socket-bypass-spi-for-soft-radios.patch
+0003-radiointerface-wire-up-quadrf-backend.patch
+0004-native-pin-tool-scons.patch
+0005-native-prune-ambiguous-sensor-dependencies.patch

@@ -1,0 +1,20 @@
+Description: Populate hw_model and macaddr on every outgoing NodeInfo
+ frame. This distribution-specific identity behavior is isolated from the
+ radio backend and is disabled by default.
+Author: Roy C. Gross <61633595+radioroy@users.noreply.github.com>
+Origin: other
+Forwarded: no
+Applies-to: meshtastic/firmware @ 54e0d8d0ab2ff56b3a9ce967e53f79e49af560fb
+--- a/src/modules/NodeInfoModule.cpp
++++ b/src/modules/NodeInfoModule.cpp
+@@ -161,6 +161,10 @@ meshtastic_MeshPacket *NodeInfoModule::allocReply()
+         ignoreRequest = false; // Don't ignore requests anymore
+         meshtastic_User &u = owner;
+ 
++        // Populate optional downstream identity fields for NodeInfo.
++        u.hw_model = HW_VENDOR;
++        getMacAddr(u.macaddr);
++
+         // Strip the public key if the user is licensed
+         if (u.is_licensed && u.public_key.size > 0) {
+             memset(u.public_key.bytes, 0, sizeof(u.public_key.bytes));

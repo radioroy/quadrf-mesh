@@ -1,0 +1,5 @@
+# First experimental upload; there is no Debian BTS bug to close.
+quadrf-lora-phy: initial-upload-closes-no-bugs
+# Mesh Monitor and BLE bridge provide built-in command line --help and service units.
+quadrf-lora-phy: no-manual-page [usr/bin/quadrf-mesh-monitor]
+quadrf-lora-phy: no-manual-page [usr/bin/quadrf-ble-bridge]
