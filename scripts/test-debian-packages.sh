@@ -113,8 +113,8 @@ grep -Eq '"open": "https://[a-z0-9.-]+\.local:9443/"' "$apps_json" || {
   echo "apps.d descriptor must open the Meshtastic web UI on this unit :9443" >&2
   exit 1
 }
-grep -Fq '"id": "quadrf-mesh"' "$apps_json" || {
-  echo "apps.d descriptor must keep id quadrf-mesh" >&2
+grep -Fq '"id": "mesh"' "$apps_json" || {
+  echo "apps.d descriptor must keep id mesh" >&2
   exit 1
 }
 grep -Fq '"service": "quadrf-meshtasticd.service"' "$apps_json" || {

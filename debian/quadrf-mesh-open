@@ -17,7 +17,7 @@ done
 [ "$no_window" -eq 1 ] && touch /dev/shm/quadrf-mesh-no-window
 
 if ! systemctl is-active --quiet quadrf-meshtasticd.service; then
-    sudo /usr/sbin/quadrf-app start quadrf-mesh 2>/dev/null || sudo systemctl start quadrf-meshtasticd.service 2>/dev/null || true
+    sudo /usr/sbin/quadrf-app start mesh 2>/dev/null || sudo systemctl start quadrf-meshtasticd.service 2>/dev/null || true
 elif [ "$no_window" -eq 0 ] && command -v quadrf-mesh-monitor >/dev/null 2>&1 &&
         ! pidof quadrf-mesh-monitor >/dev/null 2>&1; then
     DISPLAY=:1 SDL_VIDEODRIVER=x11 quadrf-mesh-monitor >/dev/null 2>&1 &
