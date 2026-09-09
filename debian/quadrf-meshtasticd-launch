@@ -38,6 +38,13 @@ if [ -f "$identity_file" ]; then
     id_seed_hash="${QUADRF_MESHTASTICD_MAC_SEED_HASH:-}"
     unset QUADRF_MESHTASTICD_MAC
 fi
+quadrf_conf=/etc/quadrf/quadrf.conf
+if [ -r "$quadrf_conf" ]; then
+    # shellcheck disable=SC1090
+    . "$quadrf_conf"
+fi
+export CALLSIGN="${CALLSIGN:-${QUADRF_CALLSIGN:-NOCALL}}"
+
 if [ -f "$defaults_file" ]; then
     # Explicit administrator configuration has final precedence over the
     # persisted generated identity.

@@ -8,7 +8,7 @@ diff --git a/src/platform/portduino/QuadRFRadio.h b/src/platform/portduino/QuadR
 new file mode 100644
 --- /dev/null
 +++ b/src/platform/portduino/QuadRFRadio.h
-@@ -0,0 +1,111 @@
+@@ -0,0 +1,130 @@
 +// SPDX-FileCopyrightText: 2026 Roy C. Gross
 +// SPDX-License-Identifier: GPL-3.0-only
 +#pragma once
@@ -24,6 +24,7 @@ new file mode 100644
 +#include <atomic>
 +#include <deque>
 +#include <mutex>
++#include <set>
 +#include <string>
 +#include <thread>
 +#include <vector>
@@ -65,6 +66,9 @@ new file mode 100644
 +
 +    bool getRxMetrics(uint32_t packet_id, RxMetrics& out);
 +
++    std::string getCallsign();
++    void setCallsign(const std::string &call);
++
 +  protected:
 +    bool canSendImmediately();
 +    void completeSending();
@@ -91,6 +95,11 @@ new file mode 100644
 +    void stopControlServer();
 +    void controlThreadMain();
 +
++    void loadCallsign();
++    void startBeaconThread();
++    void stopBeaconThread();
++    void beaconThreadMain();
++
 +    struct RxFrame {
 +        std::vector<uint8_t> air;
 +        float snr_db = 0;
@@ -111,6 +120,16 @@ new file mode 100644
 +    std::atomic<bool> control_running_{false};
 +    std::thread control_thread_;
 +
++    mutable std::mutex callsign_mu_;
++    std::string callsign_ = "NOCALL";
++    time_t last_conf_mtime_ = 0;
++
++    std::atomic<bool> beacon_running_{false};
++    std::thread beacon_thread_;
++
++    std::mutex peers_mu_;
++    std::set<NodeNum> greeted_peers_;
++
 +    std::mutex metrics_mu_;
 +    std::deque<std::pair<uint32_t, RxMetrics>> recent_metrics_;
 +
@@ -124,7 +143,7 @@ diff --git a/src/platform/portduino/QuadRFRadio.cpp b/src/platform/portduino/Qua
 new file mode 100644
 --- /dev/null
 +++ b/src/platform/portduino/QuadRFRadio.cpp
-@@ -0,0 +1,570 @@
+@@ -0,0 +1,753 @@
 +// SPDX-FileCopyrightText: 2026 Roy C. Gross
 +// SPDX-License-Identifier: GPL-3.0-only
 +#include "QuadRFRadio.h"
@@ -132,13 +151,18 @@ new file mode 100644
 +#include "QuadRFPingModule.h"
 +#include "MeshService.h"
 +#include "NodeDB.h"
++#include "TransmitHistory.h"
 +#include "gps/RTC.h"
++#include "modules/NodeInfoModule.h"
 +#include "quadrf/air_ipc.hpp"
 +
++#include <cctype>
 +#include <cerrno>
 +#include <cmath>
++#include <cstdlib>
 +#include <cstring>
 +#include <fcntl.h>
++#include <fstream>
 +#include <poll.h>
 +#include <sys/socket.h>
 +#include <sys/stat.h>
@@ -157,6 +181,7 @@ new file mode 100644
 +
 +QuadRFRadio::~QuadRFRadio()
 +{
++    stopBeaconThread();
 +    stopControlServer();
 +    rx_running_ = false;
 +    closeSocket();
@@ -179,6 +204,20 @@ new file mode 100644
 +    rx_thread_ = std::thread(&QuadRFRadio::rxThreadMain, this);
 +    LOG_INFO("QuadRFRadio: connected to %s", socket_path_.c_str());
 +
++    loadCallsign();
++    {
++        std::string cur_call = getCallsign();
++        std::strncpy(owner.long_name, cur_call.c_str(), sizeof(owner.long_name) - 1);
++        owner.long_name[sizeof(owner.long_name) - 1] = '\0';
++        if (nodeDB) {
++            nodeDB->updateUser(nodeDB->getNodeNum(), owner);
++            nodeDB->saveToDisk(SEGMENT_DEVICESTATE | SEGMENT_NODEDATABASE);
++        }
++    }
++    if (transmitHistory) {
++        transmitHistory->clear();
++    }
++
 +    if (!QuadRFParrotModule::instance) {
 +        new QuadRFParrotModule();
 +    }
@@ -187,6 +226,7 @@ new file mode 100644
 +        ping->start();
 +    }
 +    startControlServer();
++    startBeaconThread();
 +
 +    return true;
 +}
@@ -528,6 +568,16 @@ new file mode 100644
 +            continue;
 +        }
 +
++        NodeNum from_node = radioBuffer.header.from;
++        bool need_greet = false;
++        {
++            std::lock_guard<std::mutex> plk(peers_mu_);
++            if (greeted_peers_.find(from_node) == greeted_peers_.end()) {
++                greeted_peers_.insert(from_node);
++                need_greet = true;
++            }
++        }
++
 +        meshtastic_MeshPacket *mp = packetPool.allocZeroed();
 +        mp->from = radioBuffer.header.from;
 +        mp->to = radioBuffer.header.to;
@@ -561,6 +611,14 @@ new file mode 100644
 +        printPacket("Lora RX", mp);
 +        airTime->logAirtime(RX_LOG, RadioInterface::getPacketTime(mp, true));
 +        deliverToReceiver(mp);
++
++        if (need_greet && nodeInfoModule) {
++            if (transmitHistory) {
++                transmitHistory->clear();
++            }
++            LOG_INFO("QuadRFRadio: new peer 0x%08x seen, broadcasting station ID", from_node);
++            nodeInfoModule->sendOurNodeInfo(NODENUM_BROADCAST, false, 0, true);
++        }
 +    }
 +}
 +
@@ -654,9 +712,14 @@ new file mode 100644
 +
 +            std::string reply;
 +            if (cmd == "GET STATUS") {
++                struct stat st;
++                if (stat("/etc/quadrf/quadrf.conf", &st) == 0 && st.st_mtime != last_conf_mtime_) {
++                    loadCallsign();
++                    setCallsign(getCallsign());
++                }
 +                uint32_t r = QuadRFPingModule::instance ? QuadRFPingModule::instance->getIntervalSec() : 0;
 +                int p = (QuadRFParrotModule::instance && QuadRFParrotModule::instance->isEnabled()) ? 1 : 0;
-+                reply = "RANGE=" + std::to_string(r) + " PARROT=" + std::to_string(p) + "\n";
++                reply = "RANGE=" + std::to_string(r) + " PARROT=" + std::to_string(p) + " CALLSIGN=" + getCallsign() + "\n";
 +            } else if (cmd.rfind("SET RANGE ", 0) == 0) {
 +                uint32_t sec = static_cast<uint32_t>(std::strtoul(cmd.c_str() + 10, nullptr, 10));
 +                if (QuadRFPingModule::instance) {
@@ -669,6 +732,13 @@ new file mode 100644
 +                    QuadRFParrotModule::instance->setEnabled(en != 0);
 +                }
 +                reply = "OK PARROT=" + std::to_string(en ? 1 : 0) + "\n";
++            } else if (cmd.rfind("SET CALLSIGN ", 0) == 0) {
++                std::string new_call = cmd.substr(13);
++                while (!new_call.empty() && (new_call.back() == ' ' || new_call.back() == '\r' || new_call.back() == '\n')) {
++                    new_call.pop_back();
++                }
++                setCallsign(new_call);
++                reply = "OK CALLSIGN=" + getCallsign() + "\n";
 +            } else {
 +                reply = "ERR unknown command\n";
 +            }
@@ -677,6 +747,138 @@ new file mode 100644
 +            (void)w;
 +        }
 +        close(client_fd);
++    }
++}
++
++void QuadRFRadio::loadCallsign()
++{
++    std::string call;
++
++    const char *conf_path = "/etc/quadrf/quadrf.conf";
++    struct stat st;
++    if (stat(conf_path, &st) == 0) {
++        last_conf_mtime_ = st.st_mtime;
++        std::ifstream f(conf_path);
++        std::string line;
++        while (std::getline(f, line)) {
++            size_t start = line.find_first_not_of(" \t");
++            if (start == std::string::npos || line[start] == '#')
++                continue;
++            line = line.substr(start);
++
++            if (line.rfind("CALLSIGN=", 0) == 0 || line.rfind("QUADRF_CALLSIGN=", 0) == 0) {
++                size_t eq = line.find('=');
++                std::string val = line.substr(eq + 1);
++                size_t vstart = val.find_first_not_of(" \t\"'");
++                size_t vend = val.find_last_not_of(" \t\"'\r\n");
++                if (vstart != std::string::npos && vend != std::string::npos && vend >= vstart) {
++                    call = val.substr(vstart, vend - vstart + 1);
++                }
++            }
++        }
++    }
++
++    if (call.empty()) {
++        const char *env_call = std::getenv("CALLSIGN");
++        if (!env_call || !*env_call) {
++            env_call = std::getenv("QUADRF_CALLSIGN");
++        }
++        if (env_call && *env_call) {
++            call = env_call;
++        }
++    }
++
++    if (call.empty()) {
++        call = "NOCALL";
++    }
++
++    for (char &c : call) {
++        c = static_cast<char>(std::toupper(static_cast<unsigned char>(c)));
++    }
++
++    std::lock_guard<std::mutex> lk(callsign_mu_);
++    callsign_ = call;
++    LOG_INFO("QuadRFRadio: station callsign loaded: %s", callsign_.c_str());
++}
++
++std::string QuadRFRadio::getCallsign()
++{
++    std::lock_guard<std::mutex> lk(callsign_mu_);
++    return callsign_;
++}
++
++void QuadRFRadio::setCallsign(const std::string &call)
++{
++    std::string upper_call = call;
++    for (char &c : upper_call) {
++        c = static_cast<char>(std::toupper(static_cast<unsigned char>(c)));
++    }
++    if (upper_call.empty()) {
++        upper_call = "NOCALL";
++    }
++
++    {
++        std::lock_guard<std::mutex> lk(callsign_mu_);
++        callsign_ = upper_call;
++    }
++
++    std::strncpy(owner.long_name, upper_call.c_str(), sizeof(owner.long_name) - 1);
++    owner.long_name[sizeof(owner.long_name) - 1] = '\0';
++    LOG_INFO("QuadRFRadio: station callsign set to %s", upper_call.c_str());
++
++    if (nodeDB) {
++        nodeDB->updateUser(nodeDB->getNodeNum(), owner);
++        nodeDB->saveToDisk(SEGMENT_DEVICESTATE | SEGMENT_NODEDATABASE);
++    }
++
++    {
++        std::lock_guard<std::mutex> plk(peers_mu_);
++        greeted_peers_.clear();
++    }
++
++    if (nodeInfoModule) {
++        if (transmitHistory) {
++            transmitHistory->clear();
++        }
++        nodeInfoModule->sendOurNodeInfo(NODENUM_BROADCAST, false, 0, true);
++    }
++}
++
++void QuadRFRadio::startBeaconThread()
++{
++    if (!beacon_running_.exchange(true)) {
++        beacon_thread_ = std::thread(&QuadRFRadio::beaconThreadMain, this);
++    }
++}
++
++void QuadRFRadio::stopBeaconThread()
++{
++    beacon_running_ = false;
++    if (beacon_thread_.joinable()) {
++        beacon_thread_.join();
++    }
++}
++
++void QuadRFRadio::beaconThreadMain()
++{
++    // Short delay for socket and radio bringup
++    for (int i = 0; i < 5 && beacon_running_; ++i) {
++        std::this_thread::sleep_for(std::chrono::seconds(1));
++    }
++
++    while (beacon_running_) {
++        if (nodeInfoModule) {
++            std::string call = getCallsign();
++            LOG_INFO("QuadRFRadio: broadcasting 10-minute station ID (callsign=%s)", call.c_str());
++            if (transmitHistory) {
++                transmitHistory->clear();
++            }
++            nodeInfoModule->sendOurNodeInfo(NODENUM_BROADCAST, false, 0, true);
++        }
++
++        for (int i = 0; i < 600 && beacon_running_; ++i) {
++            std::this_thread::sleep_for(std::chrono::seconds(1));
++        }
 +    }
 +}
 +
@@ -1124,7 +1326,7 @@ diff --git a/src/platform/portduino/QuadRFParrotModule.cpp b/src/platform/portdu
 new file mode 100644
 --- /dev/null
 +++ b/src/platform/portduino/QuadRFParrotModule.cpp
-@@ -0,0 +1,132 @@
+@@ -0,0 +1,134 @@
 +// SPDX-FileCopyrightText: 2026 Roy C. Gross
 +// SPDX-License-Identifier: GPL-3.0-only
 +#include "QuadRFParrotModule.h"
@@ -1222,13 +1424,15 @@ new file mode 100644
 +        has_metrics = QuadRFRadio::instance->getRxMetrics(mp.id, metrics);
 +    }
 +
-+    char prefix[96];
++    std::string callsign = QuadRFRadio::instance ? QuadRFRadio::instance->getCallsign() : "NOCALL";
++    char prefix[128];
 +    if (has_metrics) {
 +        float cfo_khz = static_cast<float>(metrics.cfo_hz) / 1000.0f;
-+        std::snprintf(prefix, sizeof(prefix), "[P: snr=%+.1fdB cfo=%+.1fkHz ppm=%+.1f] ",
-+                      metrics.snr_db, cfo_khz, metrics.rate_ppm);
++        std::snprintf(prefix, sizeof(prefix), "[P: DE %s snr=%+.1fdB cfo=%+.1fkHz ppm=%+.1f] ",
++                      callsign.c_str(), metrics.snr_db, cfo_khz, metrics.rate_ppm);
 +    } else {
-+        std::snprintf(prefix, sizeof(prefix), "[P: snr=%+.1fdB] ", mp.rx_snr);
++        std::snprintf(prefix, sizeof(prefix), "[P: DE %s snr=%+.1fdB] ",
++                      callsign.c_str(), mp.rx_snr);
 +    }
 +
 +    meshtastic_MeshPacket *reply = allocDataPacket();
@@ -1304,10 +1508,11 @@ diff --git a/src/platform/portduino/QuadRFPingModule.cpp b/src/platform/portduin
 new file mode 100644
 --- /dev/null
 +++ b/src/platform/portduino/QuadRFPingModule.cpp
-@@ -0,0 +1,105 @@
+@@ -0,0 +1,107 @@
 +// SPDX-FileCopyrightText: 2026 Roy C. Gross
 +// SPDX-License-Identifier: GPL-3.0-only
 +#include "QuadRFPingModule.h"
++#include "QuadRFRadio.h"
 +#include "MeshService.h"
 +#include "NodeDB.h"
 +#include "Router.h"
@@ -1384,12 +1589,13 @@ new file mode 100644
 +            p->want_ack = false;
 +
 +            seq_++;
++            std::string callsign = QuadRFRadio::instance ? QuadRFRadio::instance->getCallsign() : "NOCALL";
 +            char heartbeatString[64];
-+            std::snprintf(heartbeatString, sizeof(heartbeatString), "seq %u", seq_);
++            std::snprintf(heartbeatString, sizeof(heartbeatString), "seq %u DE %s", seq_, callsign.c_str());
 +            p->decoded.payload.size = std::strlen(heartbeatString);
 +            std::memcpy(p->decoded.payload.bytes, heartbeatString, p->decoded.payload.size);
 +
-+            LOG_INFO("QuadRFPing: sending RangeTest heartbeat seq %u (interval %u s)", seq_, sec);
++            LOG_INFO("QuadRFPing: sending RangeTest heartbeat %s (interval %u s)", heartbeatString, sec);
 +            service->sendToMesh(p);
 +        } else {
 +            LOG_WARN("QuadRFPing: allocDataPacket returned null");

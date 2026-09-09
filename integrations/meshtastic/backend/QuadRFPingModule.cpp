@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: 2026 Roy C. Gross
 // SPDX-License-Identifier: GPL-3.0-only
 #include "QuadRFPingModule.h"
+#include "QuadRFRadio.h"
 #include "MeshService.h"
 #include "NodeDB.h"
 #include "Router.h"
@@ -77,12 +78,13 @@ void QuadRFPingModule::threadMain()
             p->want_ack = false;
 
             seq_++;
+            std::string callsign = QuadRFRadio::instance ? QuadRFRadio::instance->getCallsign() : "NOCALL";
             char heartbeatString[64];
-            std::snprintf(heartbeatString, sizeof(heartbeatString), "seq %u", seq_);
+            std::snprintf(heartbeatString, sizeof(heartbeatString), "seq %u DE %s", seq_, callsign.c_str());
             p->decoded.payload.size = std::strlen(heartbeatString);
             std::memcpy(p->decoded.payload.bytes, heartbeatString, p->decoded.payload.size);
 
-            LOG_INFO("QuadRFPing: sending RangeTest heartbeat seq %u (interval %u s)", seq_, sec);
+            LOG_INFO("QuadRFPing: sending RangeTest heartbeat %s (interval %u s)", heartbeatString, sec);
             service->sendToMesh(p);
         } else {
             LOG_WARN("QuadRFPing: allocDataPacket returned null");

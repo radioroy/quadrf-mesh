@@ -95,13 +95,15 @@ ProcessMessage QuadRFParrotModule::handleReceived(const meshtastic_MeshPacket &m
         has_metrics = QuadRFRadio::instance->getRxMetrics(mp.id, metrics);
     }
 
-    char prefix[96];
+    std::string callsign = QuadRFRadio::instance ? QuadRFRadio::instance->getCallsign() : "NOCALL";
+    char prefix[128];
     if (has_metrics) {
         float cfo_khz = static_cast<float>(metrics.cfo_hz) / 1000.0f;
-        std::snprintf(prefix, sizeof(prefix), "[P: snr=%+.1fdB cfo=%+.1fkHz ppm=%+.1f] ",
-                      metrics.snr_db, cfo_khz, metrics.rate_ppm);
+        std::snprintf(prefix, sizeof(prefix), "[P: DE %s snr=%+.1fdB cfo=%+.1fkHz ppm=%+.1f] ",
+                      callsign.c_str(), metrics.snr_db, cfo_khz, metrics.rate_ppm);
     } else {
-        std::snprintf(prefix, sizeof(prefix), "[P: snr=%+.1fdB] ", mp.rx_snr);
+        std::snprintf(prefix, sizeof(prefix), "[P: DE %s snr=%+.1fdB] ",
+                      callsign.c_str(), mp.rx_snr);
     }
 
     meshtastic_MeshPacket *reply = allocDataPacket();

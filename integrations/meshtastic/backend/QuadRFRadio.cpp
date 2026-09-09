@@ -5,13 +5,18 @@
 #include "QuadRFPingModule.h"
 #include "MeshService.h"
 #include "NodeDB.h"
+#include "TransmitHistory.h"
 #include "gps/RTC.h"
+#include "modules/NodeInfoModule.h"
 #include "quadrf/air_ipc.hpp"
 
+#include <cctype>
 #include <cerrno>
 #include <cmath>
+#include <cstdlib>
 #include <cstring>
 #include <fcntl.h>
+#include <fstream>
 #include <poll.h>
 #include <sys/socket.h>
 #include <sys/stat.h>
@@ -30,6 +35,7 @@ QuadRFRadio::QuadRFRadio(std::string socket_path)
 
 QuadRFRadio::~QuadRFRadio()
 {
+    stopBeaconThread();
     stopControlServer();
     rx_running_ = false;
     closeSocket();
@@ -52,6 +58,20 @@ bool QuadRFRadio::init()
     rx_thread_ = std::thread(&QuadRFRadio::rxThreadMain, this);
     LOG_INFO("QuadRFRadio: connected to %s", socket_path_.c_str());
 
+    loadCallsign();
+    {
+        std::string cur_call = getCallsign();
+        std::strncpy(owner.long_name, cur_call.c_str(), sizeof(owner.long_name) - 1);
+        owner.long_name[sizeof(owner.long_name) - 1] = '\0';
+        if (nodeDB) {
+            nodeDB->updateUser(nodeDB->getNodeNum(), owner);
+            nodeDB->saveToDisk(SEGMENT_DEVICESTATE | SEGMENT_NODEDATABASE);
+        }
+    }
+    if (transmitHistory) {
+        transmitHistory->clear();
+    }
+
     if (!QuadRFParrotModule::instance) {
         new QuadRFParrotModule();
     }
@@ -60,6 +80,7 @@ bool QuadRFRadio::init()
         ping->start();
     }
     startControlServer();
+    startBeaconThread();
 
     return true;
 }
@@ -401,6 +422,16 @@ void QuadRFRadio::handleReceiveInterrupt()
             continue;
         }
 
+        NodeNum from_node = radioBuffer.header.from;
+        bool need_greet = false;
+        {
+            std::lock_guard<std::mutex> plk(peers_mu_);
+            if (greeted_peers_.find(from_node) == greeted_peers_.end()) {
+                greeted_peers_.insert(from_node);
+                need_greet = true;
+            }
+        }
+
         meshtastic_MeshPacket *mp = packetPool.allocZeroed();
         mp->from = radioBuffer.header.from;
         mp->to = radioBuffer.header.to;
@@ -434,6 +465,14 @@ void QuadRFRadio::handleReceiveInterrupt()
         printPacket("Lora RX", mp);
         airTime->logAirtime(RX_LOG, RadioInterface::getPacketTime(mp, true));
         deliverToReceiver(mp);
+
+        if (need_greet && nodeInfoModule) {
+            if (transmitHistory) {
+                transmitHistory->clear();
+            }
+            LOG_INFO("QuadRFRadio: new peer 0x%08x seen, broadcasting station ID", from_node);
+            nodeInfoModule->sendOurNodeInfo(NODENUM_BROADCAST, false, 0, true);
+        }
     }
 }
 
@@ -527,9 +566,14 @@ void QuadRFRadio::controlThreadMain()
 
             std::string reply;
             if (cmd == "GET STATUS") {
+                struct stat st;
+                if (stat("/etc/quadrf/quadrf.conf", &st) == 0 && st.st_mtime != last_conf_mtime_) {
+                    loadCallsign();
+                    setCallsign(getCallsign());
+                }
                 uint32_t r = QuadRFPingModule::instance ? QuadRFPingModule::instance->getIntervalSec() : 0;
                 int p = (QuadRFParrotModule::instance && QuadRFParrotModule::instance->isEnabled()) ? 1 : 0;
-                reply = "RANGE=" + std::to_string(r) + " PARROT=" + std::to_string(p) + "\n";
+                reply = "RANGE=" + std::to_string(r) + " PARROT=" + std::to_string(p) + " CALLSIGN=" + getCallsign() + "\n";
             } else if (cmd.rfind("SET RANGE ", 0) == 0) {
                 uint32_t sec = static_cast<uint32_t>(std::strtoul(cmd.c_str() + 10, nullptr, 10));
                 if (QuadRFPingModule::instance) {
@@ -542,6 +586,13 @@ void QuadRFRadio::controlThreadMain()
                     QuadRFParrotModule::instance->setEnabled(en != 0);
                 }
                 reply = "OK PARROT=" + std::to_string(en ? 1 : 0) + "\n";
+            } else if (cmd.rfind("SET CALLSIGN ", 0) == 0) {
+                std::string new_call = cmd.substr(13);
+                while (!new_call.empty() && (new_call.back() == ' ' || new_call.back() == '\r' || new_call.back() == '\n')) {
+                    new_call.pop_back();
+                }
+                setCallsign(new_call);
+                reply = "OK CALLSIGN=" + getCallsign() + "\n";
             } else {
                 reply = "ERR unknown command\n";
             }
@@ -550,6 +601,138 @@ void QuadRFRadio::controlThreadMain()
             (void)w;
         }
         close(client_fd);
+    }
+}
+
+void QuadRFRadio::loadCallsign()
+{
+    std::string call;
+
+    const char *conf_path = "/etc/quadrf/quadrf.conf";
+    struct stat st;
+    if (stat(conf_path, &st) == 0) {
+        last_conf_mtime_ = st.st_mtime;
+        std::ifstream f(conf_path);
+        std::string line;
+        while (std::getline(f, line)) {
+            size_t start = line.find_first_not_of(" \t");
+            if (start == std::string::npos || line[start] == '#')
+                continue;
+            line = line.substr(start);
+
+            if (line.rfind("CALLSIGN=", 0) == 0 || line.rfind("QUADRF_CALLSIGN=", 0) == 0) {
+                size_t eq = line.find('=');
+                std::string val = line.substr(eq + 1);
+                size_t vstart = val.find_first_not_of(" \t\"'");
+                size_t vend = val.find_last_not_of(" \t\"'\r\n");
+                if (vstart != std::string::npos && vend != std::string::npos && vend >= vstart) {
+                    call = val.substr(vstart, vend - vstart + 1);
+                }
+            }
+        }
+    }
+
+    if (call.empty()) {
+        const char *env_call = std::getenv("CALLSIGN");
+        if (!env_call || !*env_call) {
+            env_call = std::getenv("QUADRF_CALLSIGN");
+        }
+        if (env_call && *env_call) {
+            call = env_call;
+        }
+    }
+
+    if (call.empty()) {
+        call = "NOCALL";
+    }
+
+    for (char &c : call) {
+        c = static_cast<char>(std::toupper(static_cast<unsigned char>(c)));
+    }
+
+    std::lock_guard<std::mutex> lk(callsign_mu_);
+    callsign_ = call;
+    LOG_INFO("QuadRFRadio: station callsign loaded: %s", callsign_.c_str());
+}
+
+std::string QuadRFRadio::getCallsign()
+{
+    std::lock_guard<std::mutex> lk(callsign_mu_);
+    return callsign_;
+}
+
+void QuadRFRadio::setCallsign(const std::string &call)
+{
+    std::string upper_call = call;
+    for (char &c : upper_call) {
+        c = static_cast<char>(std::toupper(static_cast<unsigned char>(c)));
+    }
+    if (upper_call.empty()) {
+        upper_call = "NOCALL";
+    }
+
+    {
+        std::lock_guard<std::mutex> lk(callsign_mu_);
+        callsign_ = upper_call;
+    }
+
+    std::strncpy(owner.long_name, upper_call.c_str(), sizeof(owner.long_name) - 1);
+    owner.long_name[sizeof(owner.long_name) - 1] = '\0';
+    LOG_INFO("QuadRFRadio: station callsign set to %s", upper_call.c_str());
+
+    if (nodeDB) {
+        nodeDB->updateUser(nodeDB->getNodeNum(), owner);
+        nodeDB->saveToDisk(SEGMENT_DEVICESTATE | SEGMENT_NODEDATABASE);
+    }
+
+    {
+        std::lock_guard<std::mutex> plk(peers_mu_);
+        greeted_peers_.clear();
+    }
+
+    if (nodeInfoModule) {
+        if (transmitHistory) {
+            transmitHistory->clear();
+        }
+        nodeInfoModule->sendOurNodeInfo(NODENUM_BROADCAST, false, 0, true);
+    }
+}
+
+void QuadRFRadio::startBeaconThread()
+{
+    if (!beacon_running_.exchange(true)) {
+        beacon_thread_ = std::thread(&QuadRFRadio::beaconThreadMain, this);
+    }
+}
+
+void QuadRFRadio::stopBeaconThread()
+{
+    beacon_running_ = false;
+    if (beacon_thread_.joinable()) {
+        beacon_thread_.join();
+    }
+}
+
+void QuadRFRadio::beaconThreadMain()
+{
+    // Short delay for socket and radio bringup
+    for (int i = 0; i < 5 && beacon_running_; ++i) {
+        std::this_thread::sleep_for(std::chrono::seconds(1));
+    }
+
+    while (beacon_running_) {
+        if (nodeInfoModule) {
+            std::string call = getCallsign();
+            LOG_INFO("QuadRFRadio: broadcasting 10-minute station ID (callsign=%s)", call.c_str());
+            if (transmitHistory) {
+                transmitHistory->clear();
+            }
+            nodeInfoModule->sendOurNodeInfo(NODENUM_BROADCAST, false, 0, true);
+        }
+
+        for (int i = 0; i < 600 && beacon_running_; ++i) {
+            std::this_thread::sleep_for(std::chrono::seconds(1));
+        }
     }
 }
 

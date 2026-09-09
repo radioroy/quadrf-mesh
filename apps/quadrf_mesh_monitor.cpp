@@ -55,6 +55,7 @@ struct AppState {
     std::atomic<int> rf_mode{0}; // 0 = Ch1 (Single), 1 = 4-Ch Sum
     std::atomic<uint32_t> range_sec{0}; // 0 = OFF, 5 = 5s, 10 = 10s
     std::atomic<bool> parrot_active{false};
+    std::string callsign{"NOCALL"};
 
     int scroll_offset = 0;
 };
@@ -372,6 +373,56 @@ bool sendMeshControl(const std::string& cmd, std::string* reply = nullptr) {
     return true;
 }
 
+std::string loadSystemCallsign() {
+    std::string call;
+    const char* conf_path = "/etc/quadrf/quadrf.conf";
+    FILE* fp = std::fopen(conf_path, "r");
+    if (fp) {
+        char line[256];
+        while (std::fgets(line, sizeof(line), fp)) {
+            char* p = line;
+            while (*p == ' ' || *p == '\t') p++;
+            if (*p == '#' || *p == '\0') continue;
+            if (std::strncmp(p, "CALLSIGN=", 9) == 0 || std::strncmp(p, "QUADRF_CALLSIGN=", 16) == 0) {
+                char* eq = std::strchr(p, '=');
+                if (eq) {
+                    char* val = eq + 1;
+                    while (*val == ' ' || *val == '\t' || *val == '\"' || *val == '\'') val++;
+                    char* end = val + std::strlen(val);
+                    while (end > val && (*(end - 1) == ' ' || *(end - 1) == '\t' ||
+                                         *(end - 1) == '\"' || *(end - 1) == '\'' ||
+                                         *(end - 1) == '\r' || *(end - 1) == '\n')) {
+                        end--;
+                    }
+                    if (end > val) {
+                        call.assign(val, end - val);
+                    }
+                }
+            }
+        }
+        std::fclose(fp);
+    }
+
+    if (call.empty()) {
+        const char* env_call = std::getenv("CALLSIGN");
+        if (!env_call || !*env_call) {
+            env_call = std::getenv("QUADRF_CALLSIGN");
+        }
+        if (env_call && *env_call) {
+            call = env_call;
+        }
+    }
+
+    if (call.empty()) {
+        call = "NOCALL";
+    }
+
+    for (char& c : call) {
+        c = static_cast<char>(std::toupper(static_cast<unsigned char>(c)));
+    }
+    return call;
+}
+
 void syncMeshControlStatus(AppState& state) {
     std::string resp;
     if (sendMeshControl("GET STATUS", &resp)) {
@@ -384,6 +435,20 @@ void syncMeshControlStatus(AppState& state) {
         if (ppos != std::string::npos) {
             int p = std::atoi(resp.c_str() + ppos + 7);
             state.parrot_active = (p != 0);
+        }
+        size_t cpos = resp.find("CALLSIGN=");
+        if (cpos != std::string::npos) {
+            size_t val_start = cpos + 9;
+            size_t val_end = resp.find_first_of(" \r\n", val_start);
+            if (val_end == std::string::npos) val_end = resp.size();
+            std::string call = resp.substr(val_start, val_end - val_start);
+            for (char& c : call) {
+                c = static_cast<char>(std::toupper(static_cast<unsigned char>(c)));
+            }
+            if (!call.empty()) {
+                std::lock_guard<std::mutex> lk(state.mu);
+                state.callsign = call;
+            }
         }
     }
 }
@@ -426,6 +491,7 @@ int main(int argc, char* argv[]) {
     }
 
     AppState state;
+    state.callsign = loadSystemCallsign();
     state.ble_active = checkBleActive();
     state.rf_mode = queryRfMode();
     syncMeshControlStatus(state);
@@ -517,10 +583,18 @@ int main(int argc, char* argv[]) {
         fillRect(ren, 0, 67, kWinWidth, 1, kCardBorder);
 
         drawString(ren, 20, 16, "QUADRF MESH MONITOR", kTextPrimary);
-        drawString(ren, 200, 16, QUADRF_MESH_VERSION, kTextMuted);
+        drawString(ren, 185, 16, QUADRF_MESH_VERSION, kTextMuted);
+
+        std::string cur_call;
+        {
+            std::lock_guard<std::mutex> lk(state.mu);
+            cur_call = state.callsign;
+        }
+        drawString(ren, 255, 16, "CALL:", kTextSecondary);
+        drawString(ren, 300, 16, cur_call, kAccentBlue);
 
         // Status Badges in Header
-        int badge_x = 420;
+        int badge_x = 440;
         drawString(ren, badge_x, 16, "TEL:", kTextSecondary);
         if (state.telemetry_connected) {
             drawString(ren, badge_x + 40, 16, "ONLINE", kStatusGreen);
@@ -528,11 +602,11 @@ int main(int argc, char* argv[]) {
             drawString(ren, badge_x + 40, 16, "WAITING", kStatusAmber);
         }
 
-        drawString(ren, badge_x + 120, 16, "FREQ:", kTextSecondary);
-        drawString(ren, badge_x + 165, 16, "5800 MHz", kAccentBlue);
+        drawString(ren, badge_x + 110, 16, "FREQ:", kTextSecondary);
+        drawString(ren, badge_x + 155, 16, "5800 MHz", kAccentBlue);
 
-        drawString(ren, badge_x + 250, 16, "PRESET:", kTextSecondary);
-        drawString(ren, badge_x + 315, 16, "ShortTurbo", kTextPrimary);
+        drawString(ren, badge_x + 235, 16, "PRESET:", kTextSecondary);
+        drawString(ren, badge_x + 295, 16, "ShortTurbo", kTextPrimary);
 
         // Controls Area (Buttons)
         btn_ble.draw(ren, state.ble_active ? kStatusGreen : kTextSecondary,

@@ -13,6 +13,7 @@
 #include <atomic>
 #include <deque>
 #include <mutex>
+#include <set>
 #include <string>
 #include <thread>
 #include <vector>
@@ -54,6 +55,9 @@ class QuadRFRadio : public RadioInterface, protected concurrency::NotifiedWorker
 
     bool getRxMetrics(uint32_t packet_id, RxMetrics& out);
 
+    std::string getCallsign();
+    void setCallsign(const std::string &call);
+
   protected:
     bool canSendImmediately();
     void completeSending();
@@ -80,6 +84,11 @@ class QuadRFRadio : public RadioInterface, protected concurrency::NotifiedWorker
     void stopControlServer();
     void controlThreadMain();
 
+    void loadCallsign();
+    void startBeaconThread();
+    void stopBeaconThread();
+    void beaconThreadMain();
+
     struct RxFrame {
         std::vector<uint8_t> air;
         float snr_db = 0;
@@ -99,6 +108,16 @@ class QuadRFRadio : public RadioInterface, protected concurrency::NotifiedWorker
     int ctl_sock_fd_ = -1;
     std::atomic<bool> control_running_{false};
     std::thread control_thread_;
+
+    mutable std::mutex callsign_mu_;
+    std::string callsign_ = "NOCALL";
+    time_t last_conf_mtime_ = 0;
+
+    std::atomic<bool> beacon_running_{false};
+    std::thread beacon_thread_;
+
+    std::mutex peers_mu_;
+    std::set<NodeNum> greeted_peers_;
 
     std::mutex metrics_mu_;
     std::deque<std::pair<uint32_t, RxMetrics>> recent_metrics_;

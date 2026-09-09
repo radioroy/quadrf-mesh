@@ -30,7 +30,7 @@
 | Socket Path                      | Owner (Server)                       | Client                | Protocol               | Function                                                                            |
 | -------------------------------- | ------------------------------------ | --------------------- | ---------------------- | ----------------------------------------------------------------------------------- |
 | `/run/quadrf/phy_telemetry.sock` | `quadrf-lora-phy`                    | `quadrf-mesh-monitor` | Line-delimited JSON    | Real-time tap of every physical layer decode (CRC-pass), including self-TX RF leak. |
-| `/run/quadrf/mesh_control.sock`  | `quadrf-meshtasticd` (`QuadRFRadio`) | `quadrf-mesh-monitor` | Line-delimited ASCII   | Runtime control of daemon test modes (`RANGE`, `PARROT`). Permissions: `0666`.      |
+| `/run/quadrf/mesh_control.sock`  | `quadrf-meshtasticd` (`QuadRFRadio`) | `quadrf-mesh-monitor` | Line-delimited ASCII   | Runtime control of daemon test modes (`RANGE`, `PARROT`) and callsign (`CALLSIGN`). Permissions: `0666`. |
 | `/run/quadrf/phy.sock`           | `quadrf-lora-phy`                    | `quadrf-meshtasticd`  | Air-IPC binary framing | Framing protocol passing air packets between PHY and Meshtastic daemon.             |
 
 
@@ -197,9 +197,10 @@ Monitor GUI            quadrf-mesh-monitor                Static badges: "5800 M
 
 
 
-### 4. Monitor Header Labels are Static
+### 4. Monitor Header Labels
 
-- The header badges `FREQ: 5800 MHz` and `PRESET: ShortTurbo` in Mesh Monitor are hardcoded UI constants. They do not dynamically query FPGA registers or PHY command-line flags.
+- The `CALL:` badge displays the active station callsign in uppercase, synchronized with `/etc/quadrf/quadrf.conf` and `quadrf-meshtasticd` via `mesh_control.sock`.
+- The header badges `FREQ: 5800 MHz` and `PRESET: ShortTurbo` in Mesh Monitor are hardcoded UI constants matching packaged default RF parameters. They do not dynamically query FPGA registers or PHY command-line flags.
 
 
 
