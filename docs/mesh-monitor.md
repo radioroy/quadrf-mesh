@@ -29,7 +29,7 @@
 
 | Socket Path                      | Owner (Server)                       | Client                | Protocol               | Function                                                                            |
 | -------------------------------- | ------------------------------------ | --------------------- | ---------------------- | ----------------------------------------------------------------------------------- |
-| `/run/quadrf/phy_telemetry.sock` | `quadrf-lora-phy`                    | `quadrf-mesh-monitor` | Line-delimited JSON    | Real-time tap of every physical layer decode (CRC-pass), including self-TX RF leak. |
+| `/run/quadrf/phy_telemetry.sock` | `quadrf-lora-phy`                    | `quadrf-mesh-monitor` | Line-delimited JSON    | CRC-pass decode tap (including self-TX RF leak) plus a `{"type":"modem"}` status line on client connect and `SetModem`. |
 | `/run/quadrf/mesh_control.sock`  | `quadrf-meshtasticd` (`QuadRFRadio`) | `quadrf-mesh-monitor` | Line-delimited ASCII   | Runtime control of daemon test modes (`RANGE`, `PARROT`) and callsign (`CALLSIGN`). Permissions: `0666`. |
 | `/run/quadrf/phy.sock`           | `quadrf-lora-phy`                    | `quadrf-meshtasticd`  | Air-IPC binary framing | Framing protocol passing air packets between PHY and Meshtastic daemon.             |
 
@@ -153,11 +153,12 @@ Hardware / PHY         /etc/default/quadrf-lora-phy       RF Center Freq (5800 M
                                                           TX Gain (25 dB), RX Gain (45 dB)
                                                           Antenna paths (TX 1, RX 1)
 
-Meshtastic Daemon      meshtastic --host 127.0.0.1:4403   lora.override_frequency (5800)
-                       /etc/meshtasticd/config.yaml       lora.modem_preset (SHORT_TURBO)
+Meshtastic Daemon      meshtastic --host 127.0.0.1:4403   lora.override_frequency (0; unused)
+                       /etc/meshtasticd/config.yaml       lora.modem_preset → Air-IPC SetModem
                                                           Channels, encryption, node name
 
-Monitor GUI            quadrf-mesh-monitor                Static badges: "5800 MHz", "ShortTurbo"
+Monitor GUI            quadrf-mesh-monitor                FREQ badge is static ("5800 MHz")
+                                                          PRESET badge follows PHY telemetry
                                                           Runtime triggers: RANGE, PARROT, BLE
 ```
 
@@ -173,13 +174,12 @@ Monitor GUI            quadrf-mesh-monitor                Static badges: "5800 M
 ### 2. Meshtastic Parameter Storage vs. Hardware Retuning
 
 - `meshtasticd` accepts and stores settings such as `lora.override_frequency`, `lora.modem_preset`, and `tx_power` via PhoneAPI, CLI, or configuration files.
-- However, `QuadRFRadio::reconfigure()` is currently a no-op because Air-IPC v1 lacks a control-plane interface. Changing parameters in Meshtastic modifies its internal state (packet duration modeling in `getPacketTime()`, duty cycle timers, and channel hashing) without issuing a retune command to the SDR local oscillator or rebuilding the demodulator pipeline.
-- Meshtastic's internal radio configuration should match PHY's actual operating parameters:
+- `QuadRFRadio` forces `lora.override_frequency` to $0$ on init and reconfigure. Frequency is not a Meshtastic control: PHY `--freq` sets the LO at start, and the appliance GUI slider can retune it until PHY restarts. Air-IPC `TxEnqueue` always carries `freq_hz=0`.
+- Changing `lora.modem_preset` in Meshtastic now sends Air-IPC `SetModem`. PHY rebuilds the TX/RX DSP (Short Turbo $500\text{ kHz}$ or Short Fast $250\text{ kHz}$) without retuning the LO. Unsupported presets stay on Short Turbo. `QUADRF_LORA_PHY_PRESET` is only the boot default until `meshtasticd` connects:
   ```bash
-  meshtastic --host 127.0.0.1:4403 --set lora.override_frequency 5800
   meshtastic --host 127.0.0.1:4403 --set lora.modem_preset SHORT_TURBO
   ```
-- **Region** `UNSET` **Default**: When the Meshtastic region is unconfigured (`UNSET`), the daemon defaults internally to $906.875\text{ MHz}$. While PHY no longer rejects frames with mismatched frequencies, leaving region `UNSET` breaks packet duration calculations and duty-cycle tracking. Explicitly configure both the PHY service and Meshtastic to $5800\text{ MHz}$ and `SHORT_TURBO`.
+- **Region** `UNSET` **Default**: When the Meshtastic region is unconfigured (`UNSET`), the daemon's *software* frequency falls back to a sub-GHz slot (around $906.875\text{ MHz}$ or a hashed US slot). That value is not sent to PHY and does not move the LO.
 
 
 
@@ -187,7 +187,7 @@ Monitor GUI            quadrf-mesh-monitor                Static badges: "5800 M
 
 - The QuadRF appliance web interface (`quadrf.local:80/443`) and direct `quadrf-jtag` commands write directly to transceiver registers via SPI.
 - Changing LO frequencies or gains in the appliance GUI overrides hardware registers out-of-band without notifying `quadrf-lora-phy` or `quadrf-meshtasticd`.
-- This introduces state drift: Meshtastic continues operating under its stored frequency, while the RF frontend is tuned elsewhere.
+- This is the supported live frequency control. Meshtastic does not store or display the live LO.
 - Additionally, restarting `quadrf-lora-phy` reprograms the MAX2850 using startup arguments (`/etc/default/quadrf-lora-phy`), reverting manual GUI adjustments.
 - During idle states, PHY maintains the MAX2850 PLL locked in TX mode, gating transmission using only `PA_BIAS` and FPGA `disable_tx` to eliminate PLL settle delays. Invoking `quadrf-jtag --status` (without `--no-setup`) disrupts the synthesizer and desenses the RX chain.
 - If hardware registers are disturbed, restart the stack to restore calibrated RF state:
@@ -200,7 +200,8 @@ Monitor GUI            quadrf-mesh-monitor                Static badges: "5800 M
 ### 4. Monitor Header Labels
 
 - The `CALL:` badge displays the active station callsign in uppercase, synchronized with `/etc/quadrf/quadrf.conf` and `quadrf-meshtasticd` via `mesh_control.sock`.
-- The header badges `FREQ: 5800 MHz` and `PRESET: ShortTurbo` in Mesh Monitor are hardcoded UI constants matching packaged default RF parameters. They do not dynamically query FPGA registers or PHY command-line flags.
+- `FREQ: 5800 MHz` is a hardcoded UI constant. It does not follow the appliance GUI LO slider.
+- `PRESET:` follows PHY. On telemetry connect, and after Air-IPC `SetModem`, PHY writes `{"type":"modem","preset":"shortturbo"|"shortfast"}`. The badge maps those keys to `ShortTurbo` / `ShortFast`. It does not read Meshtastic config (unsupported presets stay Short Turbo on PHY).
 
 
 

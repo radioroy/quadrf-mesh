@@ -72,6 +72,7 @@ class QuadRFRadio : public RadioInterface, protected concurrency::NotifiedWorker
     void handleReceiveInterrupt();
     void onNotify(uint32_t notification) override;
     void startSend(meshtastic_MeshPacket *txp);
+    void pushModemToPhy();
 
     bool connectSocket();
     void closeSocket();
@@ -125,6 +126,7 @@ class QuadRFRadio : public RadioInterface, protected concurrency::NotifiedWorker
     bool isReceiving_ = true;
     int16_t last_rssi_ = -120;
     uint32_t tx_end_time_ms_ = 0;
+    uint32_t last_queue_status_ms_ = 0;
 };
 
 extern QuadRFRadio *quadrfRadio;

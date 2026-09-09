@@ -43,8 +43,10 @@
 #include <iostream>
 #include <memory>
 #include <mutex>
+#include <new>
 #include <string>
 #include <thread>
+#include <utility>
 #include <vector>
 
 using namespace phy;
@@ -90,14 +92,35 @@ bool parsePreset(const std::string& name, LoraParams& out) {
     return parseMeshtasticPreset(name, out);
 }
 
+const char* presetKeyFromId(uint8_t id) {
+    switch (id) {
+        case kPresetShortTurbo:
+            return "shortturbo";
+        case kPresetShortFast:
+            return "shortfast";
+        default:
+            return nullptr;
+    }
+}
+
+template <typename T, typename... Args>
+void reconstruct(T& obj, Args&&... args) {
+    obj.~T();
+    ::new (static_cast<void*>(&obj)) T(std::forward<Args>(args)...);
+}
+
 struct ChunkQueue {
     std::mutex m;
     std::condition_variable cv;
     std::deque<std::vector<Sample>> q;
+    static constexpr size_t kMaxChunks = 32;
 
     void push(std::vector<Sample>&& c) {
         {
             std::lock_guard<std::mutex> lk(m);
+            if (q.size() >= kMaxChunks) {
+                q.pop_front();
+            }
             q.push_back(std::move(c));
         }
         cv.notify_one();
@@ -114,6 +137,10 @@ struct ChunkQueue {
         out = std::move(q.front());
         q.pop_front();
         return true;
+    }
+    void flush() {
+        std::lock_guard<std::mutex> lk(m);
+        q.clear();
     }
 };
 
@@ -501,6 +528,7 @@ int main(int argc, char** argv) {
         tx.setGapSymbols(static_cast<uint32_t>(gap_syms));
         Receiver receiver(params);
 
+        std::mutex modem_mu;
         std::mutex tx_mu;
         // Full-duplex SDR hears its own TX. Remember recent air frames and
         // suppress matching RX so the RadioInterface never sees self-echoes
@@ -532,6 +560,7 @@ int main(int argc, char** argv) {
                 std::cerr << "TX enqueue ignored (--rx-only)\n";
                 return false;
             }
+            std::lock_guard<std::mutex> modem_lk(modem_mu);
             std::lock_guard<std::mutex> lk(tx_mu);
             if (!tx.enqueue(air)) {
                 std::cerr << "TX enqueue rejected (payload too long?)\n";
@@ -589,11 +618,18 @@ int main(int argc, char** argv) {
                 std::chrono::steady_clock::time_point idle_since;
                 bool idle_timing = false;
                 while (g_running) {
-                    if (ota && !tx.isIdle()) {
+                    bool want_unmute = false;
+                    bool want_mute_check = false;
+                    {
+                        std::lock_guard<std::mutex> lk(modem_mu);
+                        want_unmute = ota && !tx.isIdle();
+                        tx.pull(chunk.data(), chunk_len);
+                        want_mute_check = ota && tx.isIdle() && tx_unmuted;
+                    }
+                    if (want_unmute) {
                         unmuteTxRf();
                         idle_timing = false;
                     }
-                    tx.pull(chunk.data(), chunk_len);
                     size_t sent = 0;
                     while (g_running && sent < chunk_len) {
                         const int ret = streams.write(chunk.data() + sent, chunk_len - sent);
@@ -605,7 +641,7 @@ int main(int argc, char** argv) {
                             break;
                         }
                     }
-                    if (ota && tx.isIdle() && tx_unmuted) {
+                    if (want_mute_check) {
                         if (!idle_timing) {
                             idle_since = std::chrono::steady_clock::now();
                             idle_timing = true;
@@ -701,6 +737,37 @@ int main(int argc, char** argv) {
                     fcntl(client, F_SETFL, flags | O_NONBLOCK);
                 }
                 telemetry_clients.push_back(client);
+                char hello[80];
+                const int hlen = snprintf(hello, sizeof(hello),
+                    "{\"type\":\"modem\",\"preset\":\"%s\"}\n", preset_name.c_str());
+                if (hlen > 0) {
+                    const ssize_t written = ::write(client, hello, static_cast<size_t>(hlen));
+                    (void)written;
+                }
+            }
+        };
+
+        auto writeTelemetryLine = [&](const char* line, size_t len) {
+            for (auto it = telemetry_clients.begin(); it != telemetry_clients.end();) {
+                ssize_t written = ::write(*it, line, len);
+                if (written < 0 && (errno == EPIPE || errno == ECONNRESET || errno == EBADF)) {
+                    close(*it);
+                    it = telemetry_clients.erase(it);
+                } else {
+                    ++it;
+                }
+            }
+        };
+
+        auto broadcastModemStatus = [&]() {
+            if (telemetry_clients.empty()) {
+                return;
+            }
+            char line[80];
+            const int len = snprintf(line, sizeof(line),
+                "{\"type\":\"modem\",\"preset\":\"%s\"}\n", preset_name.c_str());
+            if (len > 0) {
+                writeTelemetryLine(line, static_cast<size_t>(len));
             }
         };
 
@@ -727,16 +794,7 @@ int main(int argc, char** argv) {
             if (len <= 0) {
                 return;
             }
-
-            for (auto it = telemetry_clients.begin(); it != telemetry_clients.end();) {
-                ssize_t written = ::write(*it, line, static_cast<size_t>(len));
-                if (written < 0 && (errno == EPIPE || errno == ECONNRESET || errno == EBADF)) {
-                    close(*it);
-                    it = telemetry_clients.erase(it);
-                } else {
-                    ++it;
-                }
-            }
+            writeTelemetryLine(line, static_cast<size_t>(len));
         };
 
         auto flushLegacyFromRadio = [&]() {
@@ -786,19 +844,58 @@ int main(int argc, char** argv) {
             flushLegacyFromRadio();
         };
 
+        auto applyModem = [&](uint8_t preset_id) {
+            const char* name = presetKeyFromId(preset_id);
+            if (name == nullptr) {
+                std::cerr << "ipc: unknown SetModem preset " << static_cast<int>(preset_id) << "\n";
+                return;
+            }
+            LoraParams next;
+            if (!parsePreset(name, next)) {
+                std::cerr << "ipc: SetModem parse failed for " << name << "\n";
+                return;
+            }
+            next.sample_rate_hz = params.sample_rate_hz;
+            if (next.bandwidth_hz == params.bandwidth_hz &&
+                next.spreading_factor == params.spreading_factor && next.cr == params.cr) {
+                broadcastModemStatus();
+                return;
+            }
+            std::lock_guard<std::mutex> modem_lk(modem_mu);
+            std::lock_guard<std::mutex> tx_lk(tx_mu);
+            tx.clearQueue();
+            reconstruct(tx, next, amplitude);
+            tx.setWarmupSymbols(static_cast<uint32_t>(warmup_syms));
+            tx.setGapSymbols(static_cast<uint32_t>(gap_syms));
+            queue.flush();
+            reconstruct(receiver, next);
+            params = next;
+            preset_name = name;
+            std::cerr << "ipc: modem preset=" << preset_name
+                      << " bw=" << params.bandwidth_hz / 1e3 << " kHz sf="
+                      << static_cast<int>(params.spreading_factor) << "\n";
+            broadcastModemStatus();
+        };
+
         auto handleIpcFrames = [&](const std::vector<Deframer::Frame>& frames) {
             for (const auto& fr : frames) {
+                if (fr.type == MsgType::kSetModem) {
+                    SetModem sm;
+                    if (!decodeSetModem(fr.body, sm)) {
+                        std::cerr << "ipc: bad SetModem\n";
+                        continue;
+                    }
+                    applyModem(sm.preset);
+                    continue;
+                }
                 if (fr.type != MsgType::kTxEnqueue) {
-                    continue;  // node should not send RxIndicate
+                    continue;
                 }
                 TxEnqueue txm;
                 if (!decodeTx(fr.body, txm)) {
                     std::cerr << "ipc: bad TxEnqueue\n";
                     continue;
                 }
-                // Air-IPC v1 carries the Meshtastic-requested center frequency
-                // as a safety assertion, not a retune command. quadrf-lora-phy is
-                // the sole RF owner; a mismatched request must fail closed.
                 if (!frequencyRequestAccepted(txm.freq_hz, center_hz)) {
                     std::cerr << "ipc: rejecting TxEnqueue frequency " << txm.freq_hz
                               << " Hz; PHY is configured for " << center_hz << " Hz\n";
@@ -832,7 +929,15 @@ int main(int argc, char** argv) {
                     break;
                 }
                 if (stream_pos >= skip_startup && !selftest_air.empty()) {
-                    while (tx.queued() < 2) {
+                    for (;;) {
+                        size_t queued = 0;
+                        {
+                            std::lock_guard<std::mutex> lk(modem_mu);
+                            queued = tx.queued();
+                        }
+                        if (queued >= 2) {
+                            break;
+                        }
                         if (!enqueueAirTx(selftest_air)) {
                             break;
                         }
@@ -844,7 +949,12 @@ int main(int argc, char** argv) {
             acceptTelemetry();
 
             // Delayed PA mute watchdog: wait ~100 ms to settle when external enable is detected before muting
-            if (ota && tx.isIdle() && !tx_unmuted) {
+            bool tx_idle = false;
+            {
+                std::lock_guard<std::mutex> lk(modem_mu);
+                tx_idle = tx.isIdle();
+            }
+            if (ota && tx_idle && !tx_unmuted) {
                 static auto last_pa_poll = std::chrono::steady_clock::now();
                 static auto pa_enable_detected = std::chrono::steady_clock::time_point{};
                 static bool pa_waiting_to_mute = false;
@@ -865,7 +975,12 @@ int main(int argc, char** argv) {
                 } else {
                     if (now - pa_enable_detected >= std::chrono::milliseconds(100)) {
                         pa_waiting_to_mute = false;
-                        if (tx.isIdle() && !tx_unmuted) {
+                        bool still_idle = false;
+                        {
+                            std::lock_guard<std::mutex> lk(modem_mu);
+                            still_idle = tx.isIdle();
+                        }
+                        if (still_idle && !tx_unmuted) {
                             rf.paMute();
                             std::cerr << "phy: external TX enable detected; muted PA after 100 ms settle delay\n";
                         }
@@ -890,8 +1005,7 @@ int main(int argc, char** argv) {
                         std::cerr << "phy: IQ mode switch detected (0x25 changed "
                                   << last_reg25 << " -> " << reg25 << "), resyncing receiver\n";
                         last_reg25 = reg25;
-                        std::vector<Sample> dropped;
-                        while (queue.pop(dropped, 0)) {}
+                        queue.flush();
                         receiver.reset();
                     }
                 }
@@ -941,7 +1055,9 @@ int main(int argc, char** argv) {
             }
 
             std::vector<Sample> chunk;
-            if (queue.pop(chunk, 20)) {
+            bool had_samples = false;
+            while (queue.pop(chunk, had_samples ? 0 : 20)) {
+                had_samples = true;
                 size_t off = 0;
                 if (stream_pos < skip_startup) {
                     off = std::min(chunk.size(), skip_startup - stream_pos);
@@ -951,7 +1067,8 @@ int main(int argc, char** argv) {
                     receiver.feed(chunk.data() + off, chunk.size() - off);
                 }
                 drainRx();
-            } else {
+            }
+            if (!had_samples) {
                 flushLegacyFromRadio();
             }
         }

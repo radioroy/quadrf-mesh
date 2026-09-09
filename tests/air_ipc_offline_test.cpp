@@ -195,6 +195,24 @@ int main() {
         CHECK(!decodeTx(frames[0].body, got), "decode rejects short TX body");
     }
 
+    // --- SetModem ---
+    {
+        SetModem sm;
+        sm.preset = kPresetShortFast;
+        std::vector<uint8_t> framed;
+        CHECK(encodeSetModem(sm, framed), "encode SetModem");
+        CHECK(framed.size() == kFrameHeaderLen + 1, "SetModem frame size");
+        CHECK(framed[3] == static_cast<uint8_t>(MsgType::kSetModem), "SetModem type");
+        Deframer d;
+        std::vector<Deframer::Frame> frames;
+        CHECK(d.feed(framed, frames) == 1, "deframe SetModem");
+        SetModem got;
+        CHECK(decodeSetModem(frames[0].body, got) && got.preset == kPresetShortFast,
+              "decode SetModem shortfast");
+        CHECK(messageTypeKnown(static_cast<uint8_t>(MsgType::kSetModem)),
+              "SetModem is a known type");
+    }
+
     // --- snr helpers ---
     {
         CHECK(snrToCenti(12.5f) == 1250, "snrToCenti");

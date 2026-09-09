@@ -56,6 +56,7 @@ struct AppState {
     std::atomic<uint32_t> range_sec{0}; // 0 = OFF, 5 = 5s, 10 = 10s
     std::atomic<bool> parrot_active{false};
     std::string callsign{"NOCALL"};
+    std::string preset{"ShortTurbo"};
 
     int scroll_offset = 0;
 };
@@ -190,6 +191,16 @@ std::string formatTime(uint64_t ts_ms) {
     return std::string(buf);
 }
 
+std::string presetDisplayName(const std::string& key) {
+    if (key == "shortturbo") {
+        return "ShortTurbo";
+    }
+    if (key == "shortfast") {
+        return "ShortFast";
+    }
+    return key;
+}
+
 std::string formatNodeId(uint32_t node) {
     char buf[16];
     if (node == 0xFFFFFFFF) {
@@ -257,10 +268,18 @@ void telemetryClientThread(AppState& state, const std::string& sock_path) {
 
                 if (line.empty()) continue;
 
+                std::string val;
+                if (parseJsonField(line, "type", val) && val == "modem") {
+                    if (parseJsonField(line, "preset", val) && !val.empty()) {
+                        std::lock_guard<std::mutex> lk(state.mu);
+                        state.preset = presetDisplayName(val);
+                    }
+                    continue;
+                }
+
                 // PHY telemetry includes full-duplex self-TX (`echo:1`);
                 // those rows stay visible even though Air-IPC never sees them.
                 PacketRecord rec;
-                std::string val;
                 if (parseJsonField(line, "ts", val)) rec.ts_ms = std::strtoull(val.c_str(), nullptr, 10);
                 if (parseJsonField(line, "snr", val)) rec.snr_db = std::strtof(val.c_str(), nullptr);
                 if (parseJsonField(line, "cfo", val)) rec.cfo_hz = std::strtol(val.c_str(), nullptr, 10);
@@ -586,9 +605,11 @@ int main(int argc, char* argv[]) {
         drawString(ren, 185, 16, QUADRF_MESH_VERSION, kTextMuted);
 
         std::string cur_call;
+        std::string cur_preset;
         {
             std::lock_guard<std::mutex> lk(state.mu);
             cur_call = state.callsign;
+            cur_preset = state.preset;
         }
         drawString(ren, 255, 16, "CALL:", kTextSecondary);
         drawString(ren, 300, 16, cur_call, kAccentBlue);
@@ -606,7 +627,7 @@ int main(int argc, char* argv[]) {
         drawString(ren, badge_x + 155, 16, "5800 MHz", kAccentBlue);
 
         drawString(ren, badge_x + 235, 16, "PRESET:", kTextSecondary);
-        drawString(ren, badge_x + 295, 16, "ShortTurbo", kTextPrimary);
+        drawString(ren, badge_x + 295, 16, cur_preset, kTextPrimary);
 
         // Controls Area (Buttons)
         btn_ble.draw(ren, state.ble_active ? kStatusGreen : kTextSecondary,

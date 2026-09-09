@@ -2,3 +2,4 @@
 0002-nodedb-default-long-name-quadrf.patch
 0003-webserver-spa-fallback.patch
 0004-phoneapi-per-client-queue-fanout.patch
+0005-phoneapi-deliver-packets-without-want-config.patch

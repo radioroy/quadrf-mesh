@@ -13,11 +13,12 @@
 //
 // Body fields are little-endian:
 //   TxEnqueue:  requested_frequency_hz (u64) | Meshtastic air frame
-//               (16..255 bytes). The PHY never retunes from this field: zero
-//               accepts its configured center; a nonzero mismatch is rejected.
+//               (16..255 bytes). The PHY never retunes from this field.
+//               QuadRFRadio sends 0 (PHY --freq, then appliance GUI LO).
 //   RxIndicate: snr_centidb (i16) | rssi_dbm (i16) | cfo_hz (i32)
 //               | rate_ppm_centi (i32) | frequency_hz (u64)
 //               | Meshtastic air frame (16..255 bytes)
+//   SetModem:   preset (u8): 0=shortturbo, 1=shortfast. Rebuilds TX/RX DSP.
 
 #include <cstddef>
 #include <cstdint>
@@ -45,11 +46,20 @@ inline constexpr size_t kMaxFrameLen = kFrameHeaderLen + kMaxBodyLen;
 enum class MsgType : uint8_t {
     kTxEnqueue = 1,
     kRxIndicate = 2,
+    kSetModem = 3,
 };
 
+inline constexpr bool messageTypeKnown(uint8_t type) {
+    return type == static_cast<uint8_t>(MsgType::kTxEnqueue) ||
+           type == static_cast<uint8_t>(MsgType::kRxIndicate) ||
+           type == static_cast<uint8_t>(MsgType::kSetModem);
+}
+
+inline constexpr uint8_t kPresetShortTurbo = 0;
+inline constexpr uint8_t kPresetShortFast = 1;
+
 struct TxEnqueue {
-    // Safety assertion only. 0 accepts the PHY configuration; a nonzero value
-    // must equal the PHY's configured center and never causes a retune.
+    // Informational. QuadRFRadio always sends 0; PHY never retunes from it.
     uint64_t freq_hz = 0;
     std::vector<uint8_t> air;
 };
@@ -61,6 +71,10 @@ struct RxIndicate {
     float rate_ppm = 0.0f;
     uint64_t freq_hz = 0;
     std::vector<uint8_t> air;
+};
+
+struct SetModem {
+    uint8_t preset = kPresetShortTurbo;
 };
 
 inline constexpr uint64_t kFrequencyQuantumHz = 1000;
@@ -88,8 +102,8 @@ inline uint64_t frequencyMHzToQuantizedHz(double frequency_mhz) {
 
 inline constexpr bool frequencyRequestAccepted(uint64_t requested_hz,
                                                 uint64_t configured_hz) {
-    // Dynamic GUI / Meshtastic tuning: allow any requested frequency to pass.
-    // Modulation occurs at whichever center frequency the local LO is tuned to.
+    // QuadRFRadio sends 0. Accept any leftover nonzero; the GUI may have
+    // already moved the LO away from PHY --freq.
     (void)requested_hz;
     (void)configured_hz;
     return true;
@@ -262,6 +276,23 @@ inline bool decodeRx(const std::vector<uint8_t>& body, RxIndicate& output) {
     return decodeRx(body.data(), body.size(), output);
 }
 
+inline bool encodeSetModem(const SetModem& message, std::vector<uint8_t>& output) {
+    const uint8_t body = message.preset;
+    return detail::encodeFrame(MsgType::kSetModem, &body, 1, output);
+}
+
+inline bool decodeSetModem(const uint8_t* body, size_t length, SetModem& output) {
+    if (body == nullptr || length != 1) {
+        return false;
+    }
+    output.preset = body[0];
+    return true;
+}
+
+inline bool decodeSetModem(const std::vector<uint8_t>& body, SetModem& output) {
+    return decodeSetModem(body.data(), body.size(), output);
+}
+
 class Deframer {
   public:
     struct Frame {
@@ -297,8 +328,7 @@ class Deframer {
                     }
                     break;
                 case State::kType:
-                    if (byte != static_cast<uint8_t>(MsgType::kTxEnqueue) &&
-                        byte != static_cast<uint8_t>(MsgType::kRxIndicate)) {
+                    if (!messageTypeKnown(byte)) {
                         rejectAndResync(byte);
                     } else {
                         type_ = static_cast<MsgType>(byte);

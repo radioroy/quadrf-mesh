@@ -8,7 +8,7 @@ diff --git a/src/platform/portduino/QuadRFRadio.h b/src/platform/portduino/QuadR
 new file mode 100644
 --- /dev/null
 +++ b/src/platform/portduino/QuadRFRadio.h
-@@ -0,0 +1,130 @@
+@@ -0,0 +1,132 @@
 +// SPDX-FileCopyrightText: 2026 Roy C. Gross
 +// SPDX-License-Identifier: GPL-3.0-only
 +#pragma once
@@ -83,6 +83,7 @@ new file mode 100644
 +    void handleReceiveInterrupt();
 +    void onNotify(uint32_t notification) override;
 +    void startSend(meshtastic_MeshPacket *txp);
++    void pushModemToPhy();
 +
 +    bool connectSocket();
 +    void closeSocket();
@@ -136,6 +137,7 @@ new file mode 100644
 +    bool isReceiving_ = true;
 +    int16_t last_rssi_ = -120;
 +    uint32_t tx_end_time_ms_ = 0;
++    uint32_t last_queue_status_ms_ = 0;
 +};
 +
 +extern QuadRFRadio *quadrfRadio;
@@ -143,7 +145,7 @@ diff --git a/src/platform/portduino/QuadRFRadio.cpp b/src/platform/portduino/Qua
 new file mode 100644
 --- /dev/null
 +++ b/src/platform/portduino/QuadRFRadio.cpp
-@@ -0,0 +1,753 @@
+@@ -0,0 +1,806 @@
 +// SPDX-FileCopyrightText: 2026 Roy C. Gross
 +// SPDX-License-Identifier: GPL-3.0-only
 +#include "QuadRFRadio.h"
@@ -193,9 +195,26 @@ new file mode 100644
 +        quadrfRadio = nullptr;
 +}
 +
++static bool clearMeshtasticOverrideFrequency()
++{
++    // PHY programs the LO at start (--freq); the appliance GUI may retune it
++    // later. Meshtastic override_frequency does not move RF and the web UI
++    // rejects 5800 (validates 410-930 MHz or 0). Keep the stored value at 0.
++    if (config.lora.override_frequency == 0)
++        return false;
++    LOG_INFO("QuadRFRadio: clearing lora.override_frequency=%.3f (PHY owns the LO)",
++             static_cast<double>(config.lora.override_frequency));
++    config.lora.override_frequency = 0;
++    if (nodeDB)
++        nodeDB->saveToDisk(SEGMENT_CONFIG);
++    return true;
++}
++
 +bool QuadRFRadio::init()
 +{
 +    RadioInterface::init();
++    if (clearMeshtasticOverrideFrequency())
++        RadioInterface::reconfigure();
 +    if (!connectSocket()) {
 +        LOG_ERROR("QuadRFRadio: connect %s failed: %s", socket_path_.c_str(), strerror(errno));
 +        return false;
@@ -203,6 +222,7 @@ new file mode 100644
 +    rx_running_ = true;
 +    rx_thread_ = std::thread(&QuadRFRadio::rxThreadMain, this);
 +    LOG_INFO("QuadRFRadio: connected to %s", socket_path_.c_str());
++    pushModemToPhy();
 +
 +    loadCallsign();
 +    {
@@ -231,10 +251,40 @@ new file mode 100644
 +    return true;
 +}
 +
++static uint8_t phyPresetFromMeshtastic()
++{
++    switch (config.lora.modem_preset) {
++    case meshtastic_Config_LoRaConfig_ModemPreset_SHORT_FAST:
++        return quadrf::air_ipc::kPresetShortFast;
++    case meshtastic_Config_LoRaConfig_ModemPreset_SHORT_TURBO:
++        return quadrf::air_ipc::kPresetShortTurbo;
++    default:
++        LOG_WARN("QuadRFRadio: unsupported modem_preset %d; reverting to Short Turbo",
++                 static_cast<int>(config.lora.modem_preset));
++        config.lora.modem_preset = meshtastic_Config_LoRaConfig_ModemPreset_SHORT_TURBO;
++        if (nodeDB)
++            nodeDB->saveToDisk(SEGMENT_CONFIG);
++        return quadrf::air_ipc::kPresetShortTurbo;
++    }
++}
++
++void QuadRFRadio::pushModemToPhy()
++{
++    quadrf::air_ipc::SetModem msg;
++    msg.preset = phyPresetFromMeshtastic();
++    std::vector<uint8_t> frame;
++    if (!quadrf::air_ipc::encodeSetModem(msg, frame) || !writeFrame(frame)) {
++        LOG_WARN("QuadRFRadio: SetModem preset=%u failed", static_cast<unsigned>(msg.preset));
++        return;
++    }
++    LOG_INFO("QuadRFRadio: SetModem preset=%u", static_cast<unsigned>(msg.preset));
++}
++
 +bool QuadRFRadio::reconfigure()
 +{
++    clearMeshtasticOverrideFrequency();
 +    RadioInterface::reconfigure();
-+    // PHY owns RF/DSP; frequency is carried only as a fail-safe assertion.
++    pushModemToPhy();
 +    return true;
 +}
 +
@@ -513,9 +563,8 @@ new file mode 100644
 +    size_t numbytes = beginSending(txp);
 +
 +    quadrf::air_ipc::TxEnqueue msg;
-+    // getFreq() is MHz; PHY wants Hz. 0 → PHY default.
-+    const float freq_mhz = getFreq();
-+    msg.freq_hz = quadrf::air_ipc::frequencyMHzToQuantizedHz(static_cast<double>(freq_mhz));
++    // 0 = accept the current LO (PHY --freq, or the appliance GUI slider).
++    msg.freq_hz = 0;
 +    msg.air.assign(reinterpret_cast<uint8_t *>(&radioBuffer),
 +                   reinterpret_cast<uint8_t *>(&radioBuffer) + numbytes);
 +
@@ -527,7 +576,13 @@ new file mode 100644
 +        LOG_INFO("QuadRF TX air=%zu freq_hz=%llu", numbytes, (unsigned long long)msg.freq_hz);
 +    }
 +
-+    service->sendQueueStatusToPhone(getQueueStatus(), 0, txp->id);
++    // QueueStatus is a tiny PhoneAPI side channel. Beacons + rebroadcasts
++    // filled it in a few milliseconds and the web UI then discarded traffic.
++    const uint32_t now = millis();
++    if (now - last_queue_status_ms_ >= 1000) {
++        last_queue_status_ms_ = now;
++        service->sendQueueStatusToPhone(getQueueStatus(), 0, txp->id);
++    }
 +}
 +
 +void QuadRFRadio::handleReceiveInterrupt()
@@ -901,7 +956,7 @@ diff --git a/src/platform/portduino/quadrf/air_ipc.hpp b/src/platform/portduino/
 new file mode 100644
 --- /dev/null
 +++ b/src/platform/portduino/quadrf/air_ipc.hpp
-@@ -0,0 +1,378 @@
+@@ -0,0 +1,408 @@
 +// SPDX-FileCopyrightText: 2026 Roy C. Gross
 +// SPDX-License-Identifier: Apache-2.0
 +#pragma once
@@ -917,11 +972,12 @@ new file mode 100644
 +//
 +// Body fields are little-endian:
 +//   TxEnqueue:  requested_frequency_hz (u64) | Meshtastic air frame
-+//               (16..255 bytes). The PHY never retunes from this field: zero
-+//               accepts its configured center; a nonzero mismatch is rejected.
++//               (16..255 bytes). The PHY never retunes from this field.
++//               QuadRFRadio sends 0 (PHY --freq, then appliance GUI LO).
 +//   RxIndicate: snr_centidb (i16) | rssi_dbm (i16) | cfo_hz (i32)
 +//               | rate_ppm_centi (i32) | frequency_hz (u64)
 +//               | Meshtastic air frame (16..255 bytes)
++//   SetModem:   preset (u8): 0=shortturbo, 1=shortfast. Rebuilds TX/RX DSP.
 +
 +#include <cstddef>
 +#include <cstdint>
@@ -949,11 +1005,20 @@ new file mode 100644
 +enum class MsgType : uint8_t {
 +    kTxEnqueue = 1,
 +    kRxIndicate = 2,
++    kSetModem = 3,
 +};
 +
++inline constexpr bool messageTypeKnown(uint8_t type) {
++    return type == static_cast<uint8_t>(MsgType::kTxEnqueue) ||
++           type == static_cast<uint8_t>(MsgType::kRxIndicate) ||
++           type == static_cast<uint8_t>(MsgType::kSetModem);
++}
++
++inline constexpr uint8_t kPresetShortTurbo = 0;
++inline constexpr uint8_t kPresetShortFast = 1;
++
 +struct TxEnqueue {
-+    // Safety assertion only. 0 accepts the PHY configuration; a nonzero value
-+    // must equal the PHY's configured center and never causes a retune.
++    // Informational. QuadRFRadio always sends 0; PHY never retunes from it.
 +    uint64_t freq_hz = 0;
 +    std::vector<uint8_t> air;
 +};
@@ -965,6 +1030,10 @@ new file mode 100644
 +    float rate_ppm = 0.0f;
 +    uint64_t freq_hz = 0;
 +    std::vector<uint8_t> air;
++};
++
++struct SetModem {
++    uint8_t preset = kPresetShortTurbo;
 +};
 +
 +inline constexpr uint64_t kFrequencyQuantumHz = 1000;
@@ -992,8 +1061,8 @@ new file mode 100644
 +
 +inline constexpr bool frequencyRequestAccepted(uint64_t requested_hz,
 +                                                uint64_t configured_hz) {
-+    // Dynamic GUI / Meshtastic tuning: allow any requested frequency to pass.
-+    // Modulation occurs at whichever center frequency the local LO is tuned to.
++    // QuadRFRadio sends 0. Accept any leftover nonzero; the GUI may have
++    // already moved the LO away from PHY --freq.
 +    (void)requested_hz;
 +    (void)configured_hz;
 +    return true;
@@ -1166,6 +1235,23 @@ new file mode 100644
 +    return decodeRx(body.data(), body.size(), output);
 +}
 +
++inline bool encodeSetModem(const SetModem& message, std::vector<uint8_t>& output) {
++    const uint8_t body = message.preset;
++    return detail::encodeFrame(MsgType::kSetModem, &body, 1, output);
++}
++
++inline bool decodeSetModem(const uint8_t* body, size_t length, SetModem& output) {
++    if (body == nullptr || length != 1) {
++        return false;
++    }
++    output.preset = body[0];
++    return true;
++}
++
++inline bool decodeSetModem(const std::vector<uint8_t>& body, SetModem& output) {
++    return decodeSetModem(body.data(), body.size(), output);
++}
++
 +class Deframer {
 +  public:
 +    struct Frame {
@@ -1201,8 +1287,7 @@ new file mode 100644
 +                    }
 +                    break;
 +                case State::kType:
-+                    if (byte != static_cast<uint8_t>(MsgType::kTxEnqueue) &&
-+                        byte != static_cast<uint8_t>(MsgType::kRxIndicate)) {
++                    if (!messageTypeKnown(byte)) {
 +                        rejectAndResync(byte);
 +                    } else {
 +                        type_ = static_cast<MsgType>(byte);

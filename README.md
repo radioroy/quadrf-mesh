@@ -82,14 +82,16 @@ meshtastic --host 127.0.0.1:4403 --info
 
 
 
-### Matching PHY and Meshtastic settings
+### Frequency and modem preset
 
-`quadrf-lora-phy` sets the actual operating frequency and modem speed in `/etc/default/quadrf-lora-phy`. Meshtastic needs to be set to the same frequency and preset:
+`quadrf-lora-phy` owns the radio. Center frequency is `QUADRF_LORA_PHY_FREQ` (default 5800 MHz) at service start. The appliance GUI LO slider can retune that live; a PHY restart writes the packaged `--freq` again.
+
+Meshtastic `lora.override_frequency` stays `0` (the web UI rejects 5800). It does not tune the LO. `QuadRFRadio` clears a nonzero override on startup.
+
+`lora.modem_preset` is pushed to PHY over Air-IPC `SetModem` (Short Turbo or Short Fast). Frequency stays on PHY `--freq` / the appliance GUI. Other Meshtastic presets are not implemented in the demodulator and stay on Short Turbo.
 
 ```bash
-# Example for 5800 MHz and SHORT_TURBO (the packaged default):
-meshtastic --host 127.0.0.1:4403 --set lora.override_frequency 5800
-meshtastic --host 127.0.0.1:4403 --set lora.modem_preset SHORT_TURBO
+meshtastic --host 127.0.0.1:4403 --set lora.modem_preset SHORT_FAST
 ```
 
 

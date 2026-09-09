@@ -24,21 +24,19 @@ PhoneAPI on TCP 4403, not 9443.
 Radio configuration
 -------------------
 
-`quadrf-lora-phy` is authoritative for radio hardware settings. The frequency
-(`QUADRF_LORA_PHY_FREQ`) and preset (`QUADRF_LORA_PHY_PRESET`) set in `/etc/default/quadrf-lora-phy`
-control the RF frontend.
+`quadrf-lora-phy` is authoritative for radio hardware settings. Frequency
+(`QUADRF_LORA_PHY_FREQ`) and preset (`QUADRF_LORA_PHY_PRESET`) in
+`/etc/default/quadrf-lora-phy` program the RF frontend at start. The
+appliance GUI LO control can retune frequency until PHY restarts.
 
-Meshtastic must be configured to match those settings:
+Meshtastic `lora.override_frequency` is kept at 0 and does not tune the
+radio. `lora.modem_preset` is sent to PHY (Short Turbo or Short Fast):
 
   Preset mapping:
     shortturbo     SHORT_TURBO (default)
     shortfast      SHORT_FAST
 
-For example, with the default PHY settings (5800 MHz, SHORT_TURBO):
-
-  meshtastic --host 127.0.0.1:4403 --set lora.override_frequency 5800
   meshtastic --host 127.0.0.1:4403 --set lora.modem_preset SHORT_TURBO
-  meshtastic --host 127.0.0.1:4403 --set lora.region <YOUR_REGION>
 
 Node identity
 -------------

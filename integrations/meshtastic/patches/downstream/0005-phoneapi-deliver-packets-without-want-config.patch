@@ -1,0 +1,128 @@
+Description: Deliver mesh packets to the HTTP web UI after a reboot without a new want_config.
+ Saving LoRa config reboots meshtasticd. The browser keeps polling
+ /api/v1/fromradio while PhoneAPI is still STATE_SEND_NOTHING, so
+ available() returned false and chat stayed empty even though Router
+ had the text.
+ Register HTTP clients in phoneClients during STATE_SEND_NOTHING so they
+ receive per-client fanout copies even when another PhoneAPI client (e.g.
+ TCP port 4403) is active. Disconnect HTTP client after 30 seconds of
+ polling inactivity to prevent stale packet buildup.
+Author: Roy C. Gross <61633595+radioroy@users.noreply.github.com>
+Origin: other
+Forwarded: no
+Applies-to: meshtastic/firmware @ 54e0d8d0ab2ff56b3a9ce967e53f79e49af560fb (after 0004)
+--- a/src/mesh/PhoneAPI.h
++++ b/src/mesh/PhoneAPI.h
+@@ -113,7 +113,9 @@ class PhoneAPI : public Observer<uint32_t>, public concurrency::OSThread
+     virtual void close();
+ 
+-    bool isInterestedInPackets() const { return state != STATE_SEND_NOTHING; }
++    bool isInterestedInPackets() const {
++        return state == STATE_SEND_PACKETS || (api_type == TYPE_HTTP && state == STATE_SEND_NOTHING);
++    }
+     void enqueueClientPacket(meshtastic_MeshPacket *p);
+     meshtastic_MeshPacket *getClientPacket();
+ 
+--- a/src/mesh/PhoneAPI.cpp
++++ b/src/mesh/PhoneAPI.cpp
+@@ -297,8 +297,13 @@ size_t PhoneAPI::getFromRadio(uint8_t *buf)
+     memset(&fromRadioScratch, 0, sizeof(fromRadioScratch));
+ 
+     // Advance states as needed
+     switch (state) {
+     case STATE_SEND_NOTHING:
+-        LOG_DEBUG("FromRadio=STATE_SEND_NOTHING");
++        if (packetForPhone) {
++            fromRadioScratch.which_payload_variant = meshtastic_FromRadio_packet_tag;
++            fromRadioScratch.packet = *packetForPhone;
++            releasePhonePacket();
++        }
+         break;
+     case STATE_SEND_MY_INFO:
+         LOG_DEBUG("FromRadio=STATE_SEND_MY_INFO");
+--- a/src/mesh/PhoneAPI.cpp
++++ b/src/mesh/PhoneAPI.cpp
+@@ -731,8 +736,21 @@ bool PhoneAPI::available()
+ {
+     switch (state) {
+     case STATE_SEND_NOTHING:
+-        return false;
++        if (api_type == TYPE_HTTP) {
++            lastContactMsec = millis();
++            if (service) {
++                service->registerPhoneClient(this);
++            }
++            if (!packetForPhone)
++                packetForPhone = getClientPacket();
++            if (!packetForPhone)
++                packetForPhone = service->getForPhone();
++            return !!packetForPhone;
++        }
++        return false;
+     case STATE_SEND_MY_INFO:
+     case STATE_SEND_UIDATA:
+     case STATE_SEND_CHANNELS:
+@@ -771,6 +789,9 @@ bool PhoneAPI::available()
+     case STATE_SEND_PACKETS: {
++        if (api_type == TYPE_HTTP) {
++            lastContactMsec = millis();
++        }
+         if (!queueStatusPacketForPhone)
+             queueStatusPacketForPhone = service->getQueueStatusForPhone();
+--- a/src/mesh/PhoneAPI.cpp
++++ b/src/mesh/PhoneAPI.cpp
+@@ -907,13 +920,26 @@ void PhoneAPI::enqueueClientPacket(meshtastic_MeshPacket *p)
+     concurrency::LockGuard guard(&clientQueueLock);
+     constexpr size_t kMaxClientQueue = 32;
+     if (clientPacketQueue.size() >= kMaxClientQueue) {
+-        meshtastic_MeshPacket *oldest = clientPacketQueue.front();
+-        clientPacketQueue.pop_front();
+-        if (oldest && service) {
+-            service->releaseToPool(oldest);
++        meshtastic_MeshPacket *victim = nullptr;
++        for (auto it = clientPacketQueue.begin(); it != clientPacketQueue.end(); ++it) {
++            if (*it && (*it)->which_payload_variant == meshtastic_MeshPacket_decoded_tag &&
++                (*it)->decoded.portnum != meshtastic_PortNum_TEXT_MESSAGE_APP &&
++                (*it)->decoded.portnum != meshtastic_PortNum_RANGE_TEST_APP) {
++                victim = *it;
++                clientPacketQueue.erase(it);
++                break;
++            }
+         }
+-        LOG_WARN("Client packet queue full, dropped oldest packet");
++        if (!victim) {
++            victim = clientPacketQueue.front();
++            clientPacketQueue.pop_front();
++        }
++        if (victim && service) {
++            service->releaseToPool(victim);
++        }
++        LOG_WARN("Client packet queue full, dropped a packet");
+     }
+     clientPacketQueue.push_back(p);
+ }
+--- a/src/mesh/raspihttp/PiWebServer.h
++++ b/src/mesh/raspihttp/PiWebServer.h
+@@ -37,7 +37,9 @@ class HttpAPI : public PhoneAPI
+   public:
+     HttpAPI() { api_type = TYPE_HTTP; }
+ 
+-    /// Check the current underlying physical link to see if the client is currently connected
+-    virtual bool checkIsConnected() override { return true; } // FIXME, be smarter about this
++    virtual bool checkIsConnected() override {
++        return (millis() - lastContactMsec) < 30000;
++    }
+ 
+   private:
+--- a/src/mesh/http/ContentHandler.h
++++ b/src/mesh/http/ContentHandler.h
+@@ -28,7 +28,9 @@ class HttpAPI : public PhoneAPI
+   public:
+     HttpAPI() { api_type = TYPE_HTTP; }
+ 
+-    /// Check the current underlying physical link to see if the client is currently connected
+-    virtual bool checkIsConnected() override { return true; } // FIXME, be smarter about this
++    virtual bool checkIsConnected() override {
++        return (millis() - lastContactMsec) < 30000;
++    }
+   private:

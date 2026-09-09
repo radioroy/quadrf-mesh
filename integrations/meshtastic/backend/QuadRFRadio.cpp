@@ -47,9 +47,26 @@ QuadRFRadio::~QuadRFRadio()
         quadrfRadio = nullptr;
 }
 
+static bool clearMeshtasticOverrideFrequency()
+{
+    // PHY programs the LO at start (--freq); the appliance GUI may retune it
+    // later. Meshtastic override_frequency does not move RF and the web UI
+    // rejects 5800 (validates 410-930 MHz or 0). Keep the stored value at 0.
+    if (config.lora.override_frequency == 0)
+        return false;
+    LOG_INFO("QuadRFRadio: clearing lora.override_frequency=%.3f (PHY owns the LO)",
+             static_cast<double>(config.lora.override_frequency));
+    config.lora.override_frequency = 0;
+    if (nodeDB)
+        nodeDB->saveToDisk(SEGMENT_CONFIG);
+    return true;
+}
+
 bool QuadRFRadio::init()
 {
     RadioInterface::init();
+    if (clearMeshtasticOverrideFrequency())
+        RadioInterface::reconfigure();
     if (!connectSocket()) {
         LOG_ERROR("QuadRFRadio: connect %s failed: %s", socket_path_.c_str(), strerror(errno));
         return false;
@@ -57,6 +74,7 @@ bool QuadRFRadio::init()
     rx_running_ = true;
     rx_thread_ = std::thread(&QuadRFRadio::rxThreadMain, this);
     LOG_INFO("QuadRFRadio: connected to %s", socket_path_.c_str());
+    pushModemToPhy();
 
     loadCallsign();
     {
@@ -85,10 +103,40 @@ bool QuadRFRadio::init()
     return true;
 }
 
+static uint8_t phyPresetFromMeshtastic()
+{
+    switch (config.lora.modem_preset) {
+    case meshtastic_Config_LoRaConfig_ModemPreset_SHORT_FAST:
+        return quadrf::air_ipc::kPresetShortFast;
+    case meshtastic_Config_LoRaConfig_ModemPreset_SHORT_TURBO:
+        return quadrf::air_ipc::kPresetShortTurbo;
+    default:
+        LOG_WARN("QuadRFRadio: unsupported modem_preset %d; reverting to Short Turbo",
+                 static_cast<int>(config.lora.modem_preset));
+        config.lora.modem_preset = meshtastic_Config_LoRaConfig_ModemPreset_SHORT_TURBO;
+        if (nodeDB)
+            nodeDB->saveToDisk(SEGMENT_CONFIG);
+        return quadrf::air_ipc::kPresetShortTurbo;
+    }
+}
+
+void QuadRFRadio::pushModemToPhy()
+{
+    quadrf::air_ipc::SetModem msg;
+    msg.preset = phyPresetFromMeshtastic();
+    std::vector<uint8_t> frame;
+    if (!quadrf::air_ipc::encodeSetModem(msg, frame) || !writeFrame(frame)) {
+        LOG_WARN("QuadRFRadio: SetModem preset=%u failed", static_cast<unsigned>(msg.preset));
+        return;
+    }
+    LOG_INFO("QuadRFRadio: SetModem preset=%u", static_cast<unsigned>(msg.preset));
+}
+
 bool QuadRFRadio::reconfigure()
 {
+    clearMeshtasticOverrideFrequency();
     RadioInterface::reconfigure();
-    // PHY owns RF/DSP; frequency is carried only as a fail-safe assertion.
+    pushModemToPhy();
     return true;
 }
 
@@ -367,9 +415,8 @@ void QuadRFRadio::startSend(meshtastic_MeshPacket *txp)
     size_t numbytes = beginSending(txp);
 
     quadrf::air_ipc::TxEnqueue msg;
-    // getFreq() is MHz; PHY wants Hz. 0 → PHY default.
-    const float freq_mhz = getFreq();
-    msg.freq_hz = quadrf::air_ipc::frequencyMHzToQuantizedHz(static_cast<double>(freq_mhz));
+    // 0 = accept the current LO (PHY --freq, or the appliance GUI slider).
+    msg.freq_hz = 0;
     msg.air.assign(reinterpret_cast<uint8_t *>(&radioBuffer),
                    reinterpret_cast<uint8_t *>(&radioBuffer) + numbytes);
 
@@ -381,7 +428,13 @@ void QuadRFRadio::startSend(meshtastic_MeshPacket *txp)
         LOG_INFO("QuadRF TX air=%zu freq_hz=%llu", numbytes, (unsigned long long)msg.freq_hz);
     }
 
-    service->sendQueueStatusToPhone(getQueueStatus(), 0, txp->id);
+    // QueueStatus is a tiny PhoneAPI side channel. Beacons + rebroadcasts
+    // filled it in a few milliseconds and the web UI then discarded traffic.
+    const uint32_t now = millis();
+    if (now - last_queue_status_ms_ >= 1000) {
+        last_queue_status_ms_ = now;
+        service->sendQueueStatusToPhone(getQueueStatus(), 0, txp->id);
+    }
 }
 
 void QuadRFRadio::handleReceiveInterrupt()
