@@ -1,3 +1,9 @@
+quadrf-mesh (0.1.2-1) experimental; urgency=medium
+
+  * ci: Avoid SC2015 in debian package test script
+
+ -- Roy C. Gross <61633595+radioroy@users.noreply.github.com>  Wed, 09 Sep 2026 09:52:15 -0700
+
 quadrf-mesh (0.1.1-1) experimental; urgency=medium
 
   * debian: Prefer appliance TLS certs for meshtasticd HTTPS
