@@ -129,10 +129,10 @@ grep -Fq '"ready_port": 9443' "$apps_json" || {
   echo "apps.d descriptor must keep ready_port 9443" >&2
   exit 1
 }
-grep -Fq 'meshtasticd-quadrf' "$apps_json" && grep -Fq 'quadrf-lora-phy' "$apps_json" || {
+if ! grep -Fq 'meshtasticd-quadrf' "$apps_json" || ! grep -Fq 'quadrf-lora-phy' "$apps_json"; then
   echo "apps.d descriptor must list meshtasticd-quadrf and quadrf-lora-phy" >&2
   exit 1
-}
+fi
 launch=/usr/libexec/quadrf-meshtasticd-launch
 grep -Fq /etc/quadrf/tls/fullchain.pem "$launch" || {
   echo "launch script must prefer the appliance TLS fullchain" >&2
