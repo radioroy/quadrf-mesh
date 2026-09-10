@@ -115,12 +115,17 @@ if [ "${QUADRF_MESH_NO_WINDOW:-0}" != "1" ] &&
         rm -f /dev/shm/quadrf-mesh-no-window
     elif x11_active; then
         user="${QUADRF_USER:-dietpi}"
-        ( runuser -u "$user" -- env \
-            DISPLAY=:1 \
-            HOME="/home/$user" \
-            XAUTHORITY="/home/$user/.Xauthority" \
-            SDL_VIDEODRIVER=x11 \
-            /usr/bin/quadrf-mesh-monitor >/dev/null 2>&1 || true ) &
+        # Transient unit under PID 1, not this sandbox. NoNewPrivileges on
+        # meshtasticd is inherited by runuser children and blocks sudo, so the
+        # monitor cannot start quadrf-ble-bridge or read FPGA 0x25.
+        systemd-run --quiet --collect \
+            --uid="$user" --gid="$(id -g "$user")" \
+            --property=NoNewPrivileges=no \
+            --setenv=DISPLAY=:1 \
+            --setenv=HOME="/home/$user" \
+            --setenv=XAUTHORITY="/home/$user/.Xauthority" \
+            --setenv=SDL_VIDEODRIVER=x11 \
+            /usr/bin/quadrf-mesh-monitor >/dev/null 2>&1 || true
     fi
 fi
 

@@ -154,6 +154,10 @@ grep -Fq 'x11_active' "$launch" || {
   echo "launch script must skip the monitor when X11 is absent" >&2
   exit 1
 }
+grep -Fq 'systemd-run' "$launch" || {
+  echo "launch script must spawn the monitor outside the NoNewPrivileges sandbox" >&2
+  exit 1
+}
 apply=/usr/lib/quadrf/apply.d/47-meshtasticd
 grep -Fq /etc/quadrf/tls/fullchain.pem "$apply" || {
   echo "apply hook must refresh ssl/ from the appliance fullchain" >&2

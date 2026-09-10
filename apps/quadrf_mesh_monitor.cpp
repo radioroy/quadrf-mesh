@@ -322,14 +322,11 @@ bool checkBleActive() {
 
 void toggleBleBridge(AppState& state) {
     if (state.ble_active) {
-        int r = std::system("sudo systemctl stop quadrf-ble-bridge 2>/dev/null");
-        (void)r;
-        state.ble_active = false;
+        std::system("sudo -n systemctl stop quadrf-ble-bridge 2>/dev/null");
     } else {
-        int r = std::system("sudo systemctl start quadrf-ble-bridge 2>/dev/null");
-        (void)r;
-        state.ble_active = true;
+        std::system("sudo -n systemctl start quadrf-ble-bridge 2>/dev/null");
     }
+    state.ble_active = checkBleActive();
 }
 
 int queryRfMode() {
