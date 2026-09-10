@@ -74,6 +74,10 @@ desktop=/usr/share/applications/io.github.radioroy.QuadRFMesh.desktop
   echo "missing QuadRF desktop entry: $desktop" >&2
   exit 1
 }
+grep -qx 'Name=Mesh' "$desktop" || {
+  echo "desktop entry Name must be Mesh" >&2
+  exit 1
+}
 grep -qx 'X-QuadRF-Desktop=true' "$desktop" || {
   echo "desktop entry is missing X-QuadRF-Desktop=true" >&2
   exit 1

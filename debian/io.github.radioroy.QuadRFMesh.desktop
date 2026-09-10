@@ -3,7 +3,7 @@
 [Desktop Entry]
 Type=Application
 Version=1.0
-Name=QuadRF Mesh
+Name=Mesh
 Comment=Experimental Meshtastic daemon and LoRa-compatible PHY for the QuadRF
 Exec=/usr/libexec/quadrf-mesh-open
 TryExec=meshtasticd-quadrf

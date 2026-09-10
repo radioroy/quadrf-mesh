@@ -5,7 +5,7 @@
   <id>io.github.radioroy.QuadRFMesh</id>
   <metadata_license>MIT</metadata_license>
   <project_license>GPL-3.0-only</project_license>
-  <name>QuadRF Mesh</name>
+  <name>Mesh</name>
   <summary>Experimental Meshtastic daemon and LoRa-compatible PHY for the QuadRF</summary>
   <description>
     <p>QuadRF Mesh is an experimental Meshtastic daemon and LoRa-compatible PHY for QuadRF SDR hardware.</p>
