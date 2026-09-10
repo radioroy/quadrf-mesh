@@ -5,8 +5,7 @@
 
 namespace phy {
 
-// Mosaic TX is RHCP-only on this hardware; RX defaults to the opposite sense
-// so local TX leakage is attenuated while peer RHCP still couples after path effects.
+// Mosaic TX is RHCP-only on this hardware; RX matches that sense for mesh coupling.
 enum class RfPolarization { Rhcp, Lhcp };
 
 class RfFrontend {
@@ -14,9 +13,9 @@ public:
     explicit RfFrontend(std::string jtag_path = PHY_JTAG_PATH);
 
     // antenna_mask: 4-bit enable mask (1=ant1, 2=ant2, 4=ant3, 8=ant4; 15=all).
-    // pol is RX-only (jtag has no TX pol). Default Lhcp pairs with fixed RHCP TX.
+    // pol is RX-only (jtag has no TX pol). Default Rhcp matches fixed RHCP TX.
     void configureRx(double freq_mhz, int gain_db, int bw_mhz = 40, int antenna_mask = 1,
-                     RfPolarization pol = RfPolarization::Lhcp);
+                     RfPolarization pol = RfPolarization::Rhcp);
     // Full TX program — call once at startup (gain/freq/bw/phases/ants).
     void configureTx(double freq_mhz, int gain_db, int bw_mhz = 40, int antenna_mask = 1);
 

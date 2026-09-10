@@ -26,7 +26,7 @@ void RfFrontend::configureRx(double freq_mhz, int gain_db, int bw_mhz, int anten
     std::ostringstream spec;
     // Default mask 1: single antenna avoids multi-path self-cancellation.
     // autosteer=0 + zero phases: beamforming off / centered.
-    // pol=lhcp: TX antenna array is RHCP-only; opposite RX sense attenuates local TX leakage.
+    // pol=rhcp: match fixed RHCP TX for co-polarized mesh hops.
     const char* pol_s = (pol == RfPolarization::Lhcp) ? "lhcp" : "rhcp";
     spec << "antennas=" << antenna_mask
          << ",interleave=0,tone_en=0,autosteer=0,p1=0,p2=0,p3=0,p4=0,pol=" << pol_s
