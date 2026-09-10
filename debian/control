@@ -59,7 +59,7 @@ Depends:
  quadrf-lora-phy (= ${binary:Version}),
  ${misc:Depends},
  ${shlibs:Depends},
-Recommends: python3-meshtastic, xdg-utils
+Recommends: python3-meshtastic
 Description: experimental Meshtastic daemon with QuadRF Air-IPC adapter
  Provides a Meshtastic-derived native daemon, the out-of-tree QuadRF
  RadioInterface adapter, and a checksum-locked Meshtastic Web client. It

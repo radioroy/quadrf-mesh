@@ -22,10 +22,3 @@ elif [ "$no_window" -eq 0 ] && command -v quadrf-mesh-monitor >/dev/null 2>&1 &&
         ! pidof quadrf-mesh-monitor >/dev/null 2>&1; then
     DISPLAY=:1 SDL_VIDEODRIVER=x11 quadrf-mesh-monitor >/dev/null 2>&1 &
 fi
-
-url="https://$(/usr/libexec/quadrf-mesh-mdns):9443/"
-if command -v xdg-open >/dev/null 2>&1; then
-    exec xdg-open "$url"
-fi
-echo "open $url after starting quadrf-meshtasticd.service" >&2
-exit 1

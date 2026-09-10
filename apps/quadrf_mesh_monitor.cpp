@@ -333,24 +333,21 @@ void toggleBleBridge(AppState& state) {
 }
 
 int queryRfMode() {
-    // Read FPGA register 0x25 via single-register read (no LO/RX disturbance)
+    // Read FPGA register 0x25 via single-register read (no LO/RX disturbance).
+    // quadrf-jtag prints "READ  addr=0x25 -> value=0x0001" (two spaces after READ).
     FILE* fp = popen("sudo quadrf-jtag --no-setup read 0x25 2>/dev/null", "r");
     if (!fp) return 0;
     char buf[128];
     int mode = 0;
     while (fgets(buf, sizeof(buf), fp)) {
         unsigned int val = 0;
-        if (sscanf(buf, "READ addr=0x25 -> value=0x%x", &val) == 1) {
+        const char* p = std::strstr(buf, "value=0x");
+        if (p && sscanf(p, "value=0x%x", &val) == 1) {
             mode = (val & 1) ? 1 : 0;
         }
     }
     pclose(fp);
     return mode;
-}
-
-void launchWebUi() {
-    int r = std::system("/usr/libexec/quadrf-mesh-open >/dev/null 2>&1 &");
-    (void)r;
 }
 
 bool sendMeshControl(const std::string& cmd, std::string* reply = nullptr) {
@@ -523,8 +520,7 @@ int main(int argc, char* argv[]) {
     Button btn_mode   = {133, 80, 150, 36, "RX: Beamforming"};
     Button btn_range  = {291, 80, 125, 36, "RANGE: OFF"};
     Button btn_parrot = {424, 80, 54, 36, ""};
-    Button btn_webui  = {486, 80, 180, 36, "Open Web UI (9443)"};
-    Button btn_clear  = {674, 80, 106, 36, "Clear Log"};
+    Button btn_clear  = {486, 80, 106, 36, "Clear Log"};
 
     bool running = true;
     auto last_status_check = std::chrono::steady_clock::now();
@@ -541,7 +537,6 @@ int main(int argc, char* argv[]) {
                 btn_mode.is_hovered = false;
                 btn_range.is_hovered = btn_range.contains(mx, my);
                 btn_parrot.is_hovered = btn_parrot.contains(mx, my);
-                btn_webui.is_hovered = btn_webui.contains(mx, my);
                 btn_clear.is_hovered = btn_clear.contains(mx, my);
             } else if (ev.type == SDL_MOUSEBUTTONDOWN && ev.button.button == SDL_BUTTON_LEFT) {
                 int mx = ev.button.x;
@@ -557,8 +552,6 @@ int main(int argc, char* argv[]) {
                     bool next = !state.parrot_active.load();
                     state.parrot_active = next;
                     sendMeshControl("SET PARROT " + std::string(next ? "1" : "0"));
-                } else if (btn_webui.contains(mx, my)) {
-                    launchWebUi();
                 } else if (btn_clear.contains(mx, my)) {
                     std::lock_guard<std::mutex> lk(state.mu);
                     state.packets.clear();
@@ -648,7 +641,6 @@ int main(int argc, char* argv[]) {
         }
         drawParrotIcon(ren, btn_parrot.x + 11, btn_parrot.y + 2);
 
-        btn_webui.draw(ren, kAccentBlue, kCardBorder);
         btn_clear.draw(ren, kTextSecondary, kCardBorder);
 
         // Telemetry Summary Card (y: 130 to 195)

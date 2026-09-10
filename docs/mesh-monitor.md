@@ -90,14 +90,7 @@
 
 
 
-### 5. Web UI Launcher
-
-- **Operation**: Spawns `/usr/libexec/quadrf-mesh-open` in background.
-- **Function**: Resolves local mDNS name and executes `xdg-open https://<hostname>.local:9443/`.
-
-
-
-### 6. Clear Log Button
+### 5. Clear Log Button
 
 - **Operation**: Clears the in-memory packet deque (`state.packets`) and resets the "LAST DECODED PACKET" card.
 - **Scope**: Does not clear PHY statistics or systemd journals.
