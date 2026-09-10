@@ -54,6 +54,7 @@ public:
 
     // Fast-path RX gain poke via FPGA reg 0x6A (MAX2851 LNA/VGA/digital gain).
     // Does not run jtag --status / setup; safe on the unmute/mute path.
+    int readRxGainNoSetup() const;
     void setRxGainNoSetup(int gain_db) const;
 
     const std::string& jtagPath() const { return jtag_path_; }

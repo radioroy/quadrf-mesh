@@ -4,11 +4,11 @@ This folder contains the code and patches needed to integrate Meshtastic with Qu
 
 ## Structure
 
-- **`backend/`**: Contains `QuadRFRadio`, our custom Meshtastic `RadioInterface` implementation that talks to `quadrf-lora-phy` over Air-IPC.
-- **`patches/backend/`**: Patches applied to upstream Meshtastic firmware to register `QuadRFRadio`.
-- **`patches/downstream/`**: Optional patches for device branding and default node name configuration.
-- **`examples/config.yaml`**: A sample configuration file for running `meshtasticd`.
-- **`dependencies.lock`**: Pinned versions for the Meshtastic firmware and web interface.
+- **`backend/`**: Contains `QuadRFRadio` (Air-IPC radio interface), `QuadRFPingModule` (range pings), and `QuadRFParrotModule` (parrot repeater).
+- **`patches/backend/`**: Patches applied to upstream Meshtastic firmware to wire up the QuadRF radio backend.
+- **`patches/downstream/`**: Optional patches for device branding, web UI routing, and PhoneAPI client delivery.
+- **`examples/config.yaml`**: Sample configuration file for running `meshtasticd`.
+- **`dependencies.lock`**: Pinned versions for Meshtastic firmware and web interface assets.
 
 ## Preparing Dependencies
 

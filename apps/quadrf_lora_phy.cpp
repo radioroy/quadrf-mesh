@@ -600,6 +600,7 @@ int main(int argc, char** argv) {
         // the LNA (in case of antenna disconnect / near-field).
         std::mutex rf_tx_mu;
         bool tx_unmuted = false;
+        int rx_gain_restore = rx_gain;
         constexpr auto kPaSettle = std::chrono::milliseconds(2);
         constexpr int kRxGainDucked = 0;
         const auto pa_drain = std::chrono::milliseconds(pa_drain_ms);
@@ -612,12 +613,19 @@ int main(int argc, char** argv) {
                 if (tx_unmuted) {
                     return false;
                 }
+                // GUI / jtag can change 0x6A between hops; snapshot before duck.
+                try {
+                    rx_gain_restore = rf.readRxGainNoSetup();
+                } catch (...) {
+                    rx_gain_restore = rx_gain;
+                }
                 rf.setRxGainNoSetup(kRxGainDucked);
                 rf.paUnmute();
                 tx_unmuted = true;
             }
             std::this_thread::sleep_for(kPaSettle);
-            std::cerr << "tx RF unmute (pa, rx gain ducked to " << kRxGainDucked << " dB)\n";
+            std::cerr << "tx RF unmute (pa, rx gain ducked to " << kRxGainDucked
+                      << " dB, restore=" << rx_gain_restore << " dB)\n";
             return true;
         };
         auto muteTxRf = [&]() {
@@ -628,8 +636,8 @@ int main(int argc, char** argv) {
             if (tx_unmuted) {
                 rf.paMute();
                 tx_unmuted = false;
-                rf.setRxGainNoSetup(rx_gain);
-                std::cerr << "tx RF mute (pa, rx gain restored to " << rx_gain << " dB)\n";
+                rf.setRxGainNoSetup(rx_gain_restore);
+                std::cerr << "tx RF mute (pa, rx gain restored to " << rx_gain_restore << " dB)\n";
             }
         };
 
@@ -1130,9 +1138,8 @@ int main(int argc, char** argv) {
         streams.deactivate();
 
         if (ota) {
-            rf.setRxGainNoSetup(rx_gain);
+            muteTxRf();
             rf.txOff();
-            rf.rxOff();
         }
         try {
             rf.writeRegister(0x2E, saved_reg);

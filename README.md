@@ -25,27 +25,13 @@ QuadRF Mesh is an experimental Meshtastic daemon and LoRa-compatible PHY for the
 
 
 
-## Future improvements
-
-- Soft-decision Hamming decoding
-- Low-SNR fractional CFO/STO estimators (Bernier / Yang–Wei)
-- Remaining Meshtastic modem presets (SF 8–12)
-
-
-
 ## Building from source
 
-
-
 ### Prerequisites
-
-On Debian/Ubuntu systems:
 
 ```bash
 sudo apt-get install cmake g++ libfftw3-dev libsdl2-dev libsoapysdr-dev libssl-dev ninja-build
 ```
-
-
 
 ### Build the PHY and offline tests
 
@@ -55,7 +41,7 @@ cmake --build build --parallel
 ctest --test-dir build --output-on-failure
 ```
 
-Enable NEON acceleration for the Pi 5 ARM hardware:
+Enable NEON acceleration for Pi 5 ARM hardware:
 
 ```bash
 cmake -S . -B build -DPHY_USE_NEON=ON -DPHY_JTAG_PATH=/usr/bin/quadrf-jtag
@@ -66,35 +52,42 @@ cmake --build build --parallel
 
 ## Running on QuadRF
 
-On a QuadRF, start both services:
+Start both services:
 
 ```bash
 sudo systemctl start quadrf-lora-phy quadrf-meshtasticd
 ```
 
-- **Web UI**: `https://<hostname>.local:9443` (Meshtastic HTTPS UI; not PhoneAPI).
-- **Mesh Monitor**: The desktop monitor window launches automatically on display `:1` (see [docs/mesh-monitor.md](docs/mesh-monitor.md)).
-- **PhoneAPI / CLI**: TCP 4403 (phone apps and `meshtastic --host`):
-
-```bash
-meshtastic --host 127.0.0.1:4403 --info
-```
 
 
+### Connecting
 
-### Frequency and modem preset
+- **Meshtastic Mobile App (Bluetooth LE)**: Press the **BLE** button in Mesh Monitor (or run `sudo systemctl start quadrf-ble-bridge`) to toggle Bluetooth on or off. Connect directly from the iOS or Android Meshtastic app.
+- **Web UI**: Open `https://<hostname>.local:9443` in a browser (or `https://quadrf.local:9443`).
+- **PhoneAPI / CLI**: TCP 4403 (`meshtastic --host 127.0.0.1:4403 --info`).
+- **Mesh Monitor**: Desktop UI on display `:1` or launched from the **Mesh** app icon (see [docs/mesh-monitor.md](docs/mesh-monitor.md)).
+  - **BLE**: Toggles Bluetooth on or off for mobile app connections.
+  - **RANGE**: Sends pings at 5s or 10s intervals.
+  - **Parrot**: Toggles parrot repeater mode.
+  - **Clear Log**: Clears the packet log.
+  - **RX Mode**: Displays active FPGA receiver configuration (beamforming vs. 4-channel sum).
 
-`quadrf-lora-phy` owns the radio. Center frequency is `QUADRF_LORA_PHY_FREQ` (default 5800 MHz) at service start. The appliance GUI LO slider can retune that live; a PHY restart writes the packaged `--freq` again.
 
-Meshtastic `lora.override_frequency` stays `0` (the web UI rejects 5800). It does not tune the LO. `QuadRFRadio` clears a nonzero override on startup.
 
-`lora.modem_preset` is pushed to PHY over Air-IPC `SetModem` (Short Turbo or Short Fast). Frequency stays on PHY `--freq` / the appliance GUI. Other Meshtastic presets are not implemented in the demodulator and stay on Short Turbo.
+### Modem Presets and Frequency
+
+Only two modem presets are supported:
+
+- **Short Turbo** (`SHORT_TURBO`): 500 kHz bandwidth, SF7 (default).
+- **Short Fast** (`SHORT_FAST`): 250 kHz bandwidth, SF7.
+
+Other presets selected in Meshtastic are unsupported and revert to Short Turbo. Presets can be set via CLI:
 
 ```bash
 meshtastic --host 127.0.0.1:4403 --set lora.modem_preset SHORT_FAST
 ```
 
-
+`quadrf-lora-phy` owns the radio hardware. Startup center frequency is set by `QUADRF_LORA_PHY_FREQ` (default 5800 MHz). Live retuning can be done through the QuadRF appliance GUI LO slider. Meshtastic `lora.override_frequency` must remain `0` (it does not tune the radio).
 
 ## Building Debian packages
 
@@ -119,6 +112,14 @@ This project is licensed under the GNU General Public License v3.0 (GPL-3.0). Se
 - **[gr-lora](https://github.com/rpp0/gr-lora)** (GPL-3.0): Pieter Robyns, Peter Quax, Wim Lamotte, and William Thenaers (Hasselt University). Foundational open-source LoRa SDR reverse-engineering, oversampled dechirp folding, and synchronization concepts, which `gr-lora_sdr` and subsequent SDR implementations use.
   - Reference: P. Robyns, P. Quax, W. Lamotte, and W. Thenaers, *"gr-lora: An efficient LoRa decoder for GNU Radio,"* Zenodo, 2017. [doi:10.5281/zenodo.853201](https://doi.org/10.5281/zenodo.853201).
 - **[Meshtastic](https://github.com/meshtastic)** (GPL-3.0-only): Mesh networking stack and web interface. `quadrf-meshtasticd` integrates the Meshtastic portduino daemon with an out-of-tree `RadioInterface` backend communicating via Air-IPC.
+
+
+
+## Future improvements
+
+- Soft-decision Hamming decoding
+- Low-SNR fractional CFO/STO estimators (Bernier / Yang-Wei)
+- Remaining Meshtastic modem presets (SF 8-12)
 
 
 

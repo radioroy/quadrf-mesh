@@ -200,6 +200,10 @@ void RfFrontend::setDigitalLoopback(bool enable) const {
     writeRegister(0x2E, enable ? 0x0004 : 0x0000);
 }
 
+int RfFrontend::readRxGainNoSetup() const {
+    return static_cast<int>(readRegisterNoSetup(0x6A) & 0x3F);
+}
+
 void RfFrontend::setRxGainNoSetup(int gain_db) const {
     const uint16_t clamped = static_cast<uint16_t>(std::max(0, std::min(gain_db, 63)));
     writeRegisterNoSetup(0x6A, clamped);

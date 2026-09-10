@@ -57,10 +57,10 @@ Sent from `quadrf-lora-phy` to the mesh daemon when a frame is received.
 
 ### Type 3: `SetModem`
 
-Sent from `quadrf-meshtasticd` when Meshtastic applies a modem preset (`QuadRFRadio::reconfigure()` and again after the Air-IPC socket connects).
+Sent from `quadrf-meshtasticd` when Meshtastic applies a modem preset (`QuadRFRadio::reconfigure()` and after the Air-IPC socket connects).
 
 | Offset | Size | Field | Description |
 | ---: | ---: | --- | --- |
 | 0 | 1 | Preset | `0` = Short Turbo (500 kHz / SF7), `1` = Short Fast (250 kHz / SF7) |
 
-PHY reconstructs the TX modulator and RX demodulator. It does not change `--freq` or the analog frontend. Unknown preset IDs are logged and ignored.
+Only presets `0` and `1` are supported. Any unsupported preset reverts to Short Turbo. PHY reconstructs the TX modulator and RX demodulator without altering the LO frequency.
