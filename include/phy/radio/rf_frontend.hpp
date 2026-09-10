@@ -53,6 +53,10 @@ public:
     // FPGA reg 0x2E bit 2: route TX baseband into RX (bypasses RF).
     void setDigitalLoopback(bool enable) const;
 
+    // Fast-path RX gain poke via FPGA reg 0x6A (MAX2851 LNA/VGA/digital gain).
+    // Does not run jtag --status / setup; safe on the unmute/mute path.
+    void setRxGainNoSetup(int gain_db) const;
+
     const std::string& jtagPath() const { return jtag_path_; }
 
 private:

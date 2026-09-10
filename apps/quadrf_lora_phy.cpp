@@ -78,9 +78,10 @@ void usage(const char* prog) {
         << "  --rx-ant <mask>        RX antenna bitmask (default: 1)\n"
         << "  --amplitude <a>        TX amplitude 0..1 (default: 0.8 digital, 0.7 ota)\n"
         << "  --warmup <syms>        Carrier before each frame (default: 0 / 2 ota)\n"
-        << "  --gap <syms>           Silence between frames (default: 12)\n"
+        << "  --gap <syms>           Silence between frames (default: 64)\n"
         << "  --preset <name>        Meshtastic preset: shortturbo (default), shortfast\n"
         << "  --rx-only              OTA receive only (tx off; for uni peer RX)\n"
+        << "  --pa-drain-ms <ms>     Extra idle after post-idle TX write (default: 0; env QUADRF_LORA_PHY_PA_DRAIN_MS)\n"
         << "  --selftest             Air-frame digital/OTA loopback, no IPC client\n"
         << "  --legacy-pty           Also speak StreamAPI on a PTY (bring-up only)\n"
         << "  --node <hex>           Node num for --legacy-pty (default: e58f0001)\n"
@@ -310,6 +311,7 @@ int main(int argc, char** argv) {
     float amplitude = -1.0f;
     int warmup_syms = -1;
     int gap_syms = 64;
+    int pa_drain_ms = -1;
     std::string preset_name = "shortturbo";
     std::string socket_path = "/run/quadrf/phy.sock";
     std::string telemetry_socket_path = "/run/quadrf/phy_telemetry.sock";
@@ -351,6 +353,8 @@ int main(int argc, char** argv) {
             warmup_syms = std::stoi(argv[++i]);
         } else if (arg == "--gap" && i + 1 < argc) {
             gap_syms = std::stoi(argv[++i]);
+        } else if (arg == "--pa-drain-ms" && i + 1 < argc) {
+            pa_drain_ms = std::stoi(argv[++i]);
         } else if (arg == "--preset" && i + 1 < argc) {
             preset_name = argv[++i];
         } else if (arg == "--socket" && i + 1 < argc) {
@@ -395,6 +399,23 @@ int main(int argc, char** argv) {
     }
     if (warmup_syms < 0) {
         warmup_syms = ota ? 2 : 0;
+    }
+    if (pa_drain_ms < 0) {
+        if (const char* env = std::getenv("QUADRF_LORA_PHY_PA_DRAIN_MS")) {
+            pa_drain_ms = std::stoi(env);
+        } else {
+            // scalerf f7dba9d: TX ring 0.02 s (floor 2 DSI frames, ~38 ms)
+            // and 3 DSI frames. write() of one PHY chunk (65536 host samples
+            // @ 1 Msps, TX resampler 1→86.08 Msps) backpressures at airtime,
+            // so the post-idle silence write already drains the pipeline.
+            pa_drain_ms = 0;
+        }
+    }
+    if (pa_drain_ms < 0) {
+        pa_drain_ms = 0;
+    }
+    if (pa_drain_ms > 2000) {
+        pa_drain_ms = 2000;
     }
 
     const uint64_t center_hz = frequencyMHzToQuantizedHz(center_mhz);
@@ -507,7 +528,8 @@ int main(int argc, char** argv) {
             }
             std::cerr << "quadrf-lora-phy: OTA center=" << center_mhz << " MHz, tx_gain=" << tx_gain
                       << " dB (bw=" << tx_bw << " MHz), rx_gain=" << rx_gain
-                      << " dB (bw=" << rx_bw << " MHz)\n";
+                      << " dB (bw=" << rx_bw << " MHz), pa_drain=" << pa_drain_ms
+                      << " ms, rx duck=0 dB during TX\n";
         } else {
             if (rx_only) {
                 std::cerr << "--rx-only requires --ota\n";
@@ -573,9 +595,13 @@ int main(int argc, char** argv) {
 
         // OTA half-duplex: MAX2850 stays in TX mode (PLL warm). Idle listen
         // gates PA_BIAS + FPGA disable_tx so PA noise does not desense RX.
+        // During TX, drop RX gain via FPGA 0x6A so local coupling can't hurt
+        // the LNA (in case of antenna disconnect / near-field).
         std::mutex rf_tx_mu;
         bool tx_unmuted = false;
         constexpr auto kPaSettle = std::chrono::milliseconds(2);
+        constexpr int kRxGainDucked = 0;
+        const auto pa_drain = std::chrono::milliseconds(pa_drain_ms);
         auto unmuteTxRf = [&]() -> bool {
             if (!ota || rx_only) {
                 return false;
@@ -585,11 +611,12 @@ int main(int argc, char** argv) {
                 if (tx_unmuted) {
                     return false;
                 }
+                rf.setRxGainNoSetup(kRxGainDucked);
                 rf.paUnmute();
                 tx_unmuted = true;
             }
             std::this_thread::sleep_for(kPaSettle);
-            std::cerr << "tx RF unmute (pa)\n";
+            std::cerr << "tx RF unmute (pa, rx gain ducked to " << kRxGainDucked << " dB)\n";
             return true;
         };
         auto muteTxRf = [&]() {
@@ -600,7 +627,8 @@ int main(int argc, char** argv) {
             if (tx_unmuted) {
                 rf.paMute();
                 tx_unmuted = false;
-                std::cerr << "tx RF mute (pa)\n";
+                rf.setRxGainNoSetup(rx_gain);
+                std::cerr << "tx RF mute (pa, rx gain restored to " << rx_gain << " dB)\n";
             }
         };
 
@@ -612,9 +640,13 @@ int main(int argc, char** argv) {
             tx_thread = std::thread([&]() {
                 const size_t chunk_len = std::min<size_t>(mtu, 65536);
                 std::vector<Sample> chunk(chunk_len);
-                // write() returns when DSI staging accepts samples, not when
-                // they are on the air. ~100 ms covers a few MIPI FBs (~19 ms each).
-                constexpr auto kPaDrain = std::chrono::milliseconds(300);
+                // Do not mute on the first idle pull: that chunk still holds
+                // the burst tail (64-symbol gap ≈ 16.4 ms @ Short Turbo) plus
+                // zeros to fill 65536 host samples. Mute after the next write
+                // of pure silence. The TX resampler + 0.02 s ring make that
+                // write() block ~one chunk of airtime (~65 ms), which covers
+                // 3 DSI frames (~19 ms each). pa_drain is extra wall time
+                // after that write; default 0.
                 std::chrono::steady_clock::time_point idle_since;
                 bool idle_timing = false;
                 while (g_running) {
@@ -645,8 +677,12 @@ int main(int argc, char** argv) {
                         if (!idle_timing) {
                             idle_since = std::chrono::steady_clock::now();
                             idle_timing = true;
-                        } else if (std::chrono::steady_clock::now() - idle_since >= kPaDrain) {
+                        } else if (std::chrono::steady_clock::now() - idle_since >= pa_drain) {
+                            const auto idle_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+                                                      std::chrono::steady_clock::now() - idle_since)
+                                                        .count();
                             muteTxRf();
+                            std::cerr << "tx RF mute idle_wait=" << idle_ms << " ms\n";
                         }
                     }
                 }
@@ -1084,6 +1120,7 @@ int main(int argc, char** argv) {
         streams.deactivate();
 
         if (ota) {
+            rf.setRxGainNoSetup(rx_gain);
             rf.txOff();
             rf.rxOff();
         }

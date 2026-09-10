@@ -1,5 +1,6 @@
 #include <phy/radio/rf_frontend.hpp>
 
+#include <algorithm>
 #include <array>
 #include <cstdio>
 #include <sstream>
@@ -197,6 +198,11 @@ void RfFrontend::writeRegisterNoSetup(uint8_t addr, uint16_t value) const {
 
 void RfFrontend::setDigitalLoopback(bool enable) const {
     writeRegister(0x2E, enable ? 0x0004 : 0x0000);
+}
+
+void RfFrontend::setRxGainNoSetup(int gain_db) const {
+    const uint16_t clamped = static_cast<uint16_t>(std::max(0, std::min(gain_db, 63)));
+    writeRegisterNoSetup(0x6A, clamped);
 }
 
 }  // namespace phy
