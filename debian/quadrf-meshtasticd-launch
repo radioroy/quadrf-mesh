@@ -117,7 +117,7 @@ if [ "${QUADRF_MESH_NO_WINDOW:-0}" != "1" ] &&
         user="${QUADRF_USER:-dietpi}"
         # Transient unit under PID 1, not this sandbox. NoNewPrivileges on
         # meshtasticd is inherited by runuser children and blocks sudo, so the
-        # monitor cannot start quadrf-ble-bridge or read FPGA 0x25.
+        # monitor cannot start quadrf-ble-bridge.
         systemd-run --quiet --collect \
             --uid="$user" --gid="$(id -g "$user")" \
             --property=NoNewPrivileges=no \

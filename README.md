@@ -70,7 +70,6 @@ sudo systemctl start quadrf-lora-phy quadrf-meshtasticd
   - **RANGE**: Sends pings at 5s or 10s intervals.
   - **Parrot**: Toggles parrot repeater mode.
   - **Clear Log**: Clears the packet log.
-  - **RX Mode**: Displays active FPGA receiver configuration (beamforming vs. 4-channel sum).
 
 
 

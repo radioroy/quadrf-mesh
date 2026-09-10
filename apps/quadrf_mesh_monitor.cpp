@@ -54,7 +54,6 @@ struct AppState {
     bool has_last_packet = false;
 
     std::atomic<bool> ble_active{false};
-    std::atomic<int> rf_mode{0}; // 0 = Ch1 (Single), 1 = 4-Ch Sum
     std::atomic<uint32_t> range_sec{0}; // 0 = OFF, 5 = 5s, 10 = 10s
     std::atomic<bool> parrot_active{false};
     std::string callsign{"NOCALL"};
@@ -365,24 +364,6 @@ void toggleBleBridge(AppState& state) {
     state.ble_active = checkBleActive();
 }
 
-int queryRfMode() {
-    // Read FPGA register 0x25 via single-register read (no LO/RX disturbance).
-    // quadrf-jtag prints "READ  addr=0x25 -> value=0x0001" (two spaces after READ).
-    FILE* fp = popen("sudo quadrf-jtag --no-setup read 0x25 2>/dev/null", "r");
-    if (!fp) return 0;
-    char buf[128];
-    int mode = 0;
-    while (fgets(buf, sizeof(buf), fp)) {
-        unsigned int val = 0;
-        const char* p = std::strstr(buf, "value=0x");
-        if (p && sscanf(p, "value=0x%x", &val) == 1) {
-            mode = (val & 1) ? 1 : 0;
-        }
-    }
-    pclose(fp);
-    return mode;
-}
-
 bool sendMeshControl(const std::string& cmd, std::string* reply = nullptr) {
     int fd = socket(AF_UNIX, SOCK_STREAM, 0);
     if (fd < 0) return false;
@@ -542,18 +523,15 @@ int main(int argc, char* argv[]) {
     AppState state;
     state.callsign = loadSystemCallsign();
     state.ble_active = checkBleActive();
-    state.rf_mode = queryRfMode();
     syncMeshControlStatus(state);
 
     std::thread telemetry_th(telemetryClientThread, std::ref(state), sock_path);
     telemetry_th.detach();
 
-    // Buttons (fitted within 800px width with 20px left and right margins)
     Button btn_ble    = {20, 80, 105, 36, "BLE: OFF"};
-    Button btn_mode   = {133, 80, 150, 36, "RX: Beamforming"};
-    Button btn_range  = {291, 80, 125, 36, "RANGE: OFF"};
-    Button btn_parrot = {424, 80, 54, 36, ""};
-    Button btn_clear  = {486, 80, 106, 36, "Clear Log"};
+    Button btn_range  = {133, 80, 125, 36, "RANGE: OFF"};
+    Button btn_parrot = {266, 80, 54, 36, ""};
+    Button btn_clear  = {328, 80, 106, 36, "Clear Log"};
 
     bool running = true;
     auto last_status_check = std::chrono::steady_clock::now();
@@ -567,7 +545,6 @@ int main(int argc, char* argv[]) {
                 int mx = ev.motion.x;
                 int my = ev.motion.y;
                 btn_ble.is_hovered = btn_ble.contains(mx, my);
-                btn_mode.is_hovered = false;
                 btn_range.is_hovered = btn_range.contains(mx, my);
                 btn_parrot.is_hovered = btn_parrot.contains(mx, my);
                 btn_clear.is_hovered = btn_clear.contains(mx, my);
@@ -609,14 +586,12 @@ int main(int argc, char* argv[]) {
         auto now = std::chrono::steady_clock::now();
         if (std::chrono::duration_cast<std::chrono::seconds>(now - last_status_check).count() >= 2) {
             state.ble_active = checkBleActive();
-            state.rf_mode = queryRfMode();
             syncMeshControlStatus(state);
             last_status_check = now;
         }
 
         // Update button labels
         btn_ble.text = state.ble_active ? "BLE: ON" : "BLE: OFF";
-        btn_mode.text = (state.rf_mode == 0) ? "RX: Beamforming" : "RX: 4-Ch Sum";
         uint32_t rsec = state.range_sec.load();
         btn_range.text = (rsec == 0) ? "RANGE: OFF" : ("RANGE: " + std::to_string(rsec) + "s");
 
@@ -658,7 +633,6 @@ int main(int argc, char* argv[]) {
         // Controls Area (Buttons)
         btn_ble.draw(ren, state.ble_active ? kStatusGreen : kTextSecondary,
                      state.ble_active ? kStatusGreen : kCardBorder);
-        btn_mode.draw(ren, kTextPrimary, (state.rf_mode == 1) ? kAccentBlue : kCardBorder);
         btn_range.draw(ren, (rsec > 0) ? kStatusAmber : kTextSecondary,
                        (rsec > 0) ? kStatusAmber : kCardBorder);
 

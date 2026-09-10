@@ -25,6 +25,7 @@ void RfFrontend::configureRx(double freq_mhz, int gain_db, int bw_mhz, int anten
                              RfPolarization pol) {
     std::ostringstream spec;
     // Default mask 1: single antenna avoids multi-path self-cancellation.
+    // interleave=0: one CF32 stream (FPGA 0x25 bit0).
     // autosteer=0 + zero phases: beamforming off / centered.
     // pol=rhcp: match fixed RHCP TX for co-polarized mesh hops.
     const char* pol_s = (pol == RfPolarization::Lhcp) ? "lhcp" : "rhcp";

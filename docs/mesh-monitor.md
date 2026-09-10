@@ -38,10 +38,6 @@
 - **Display**: `BLE: ON` (green) or `BLE: OFF`.
 - **Function**: Toggles Bluetooth on or off (`quadrf-ble-bridge` systemd service). Enable this to connect to the QuadRF node from the Meshtastic mobile app (iOS or Android) over Bluetooth LE.
 
-### RX Mode Indicator
-- **Display**: `RX: Beamforming` (mode 0) or `RX: 4-Ch Sum` (mode 1, blue border).
-- **Function**: Display-only status showing FPGA receiver configuration (register 0x25 bit 0: 0 = beamforming, 1 = unsteered 4-channel sum). Polled every 2 s using `quadrf-jtag --no-setup read 0x25` without disturbing the RX chain. Clicks have no effect.
-
 ### Range Button (Pings)
 - **Display**: `RANGE: OFF`, `RANGE: 5s`, or `RANGE: 10s` (amber when active).
 - **Function**: Runs ping tests. Clicking cycles between OFF, 5 s, and 10 s intervals. Sends periodic single-hop broadcast heartbeats (`seq <n>`) on port 34 (`RANGE_TEST_APP`) to measure link range and packet delivery.

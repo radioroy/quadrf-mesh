@@ -1042,29 +1042,6 @@ int main(int argc, char** argv) {
                 }
             }
 
-            // IQ mode switch resync: monitor 0x25 for transitions between 4-channel interleaved and beamformed sum
-            if (ota) {
-                static uint16_t last_reg25 = 0xFFFF;
-                static auto last_reg25_poll = std::chrono::steady_clock::now();
-                const auto now = std::chrono::steady_clock::now();
-                if (now - last_reg25_poll >= std::chrono::milliseconds(500)) {
-                    last_reg25_poll = now;
-                    uint16_t reg25 = 0;
-                    try {
-                        reg25 = rf.readRegisterNoSetup(0x25);
-                    } catch (...) {}
-                    if (last_reg25 == 0xFFFF) {
-                        last_reg25 = reg25;
-                    } else if (reg25 != last_reg25) {
-                        std::cerr << "phy: IQ mode switch detected (0x25 changed "
-                                  << last_reg25 << " -> " << reg25 << "), resyncing receiver\n";
-                        last_reg25 = reg25;
-                        queue.flush();
-                        receiver.reset();
-                    }
-                }
-            }
-
             // Air-IPC: node → PHY
             if (client_fd >= 0) {
                 pollfd pfd{client_fd, POLLIN, 0};
