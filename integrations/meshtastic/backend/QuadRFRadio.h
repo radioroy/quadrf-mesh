@@ -50,6 +50,8 @@ class QuadRFRadio : public RadioInterface, protected concurrency::NotifiedWorker
         int16_t rssi_dbm = 0;
         int32_t cfo_hz = 0;
         float rate_ppm = 0;
+        float sir_db = 0;
+        float lvl_dbfs = 0;
         uint32_t timestamp_ms = 0;
     };
 
@@ -79,7 +81,7 @@ class QuadRFRadio : public RadioInterface, protected concurrency::NotifiedWorker
     void rxThreadMain();
     bool writeFrame(const std::vector<uint8_t> &frame);
     void enqueueRx(std::vector<uint8_t> air, float snr_db, int16_t rssi_dbm,
-                   int32_t cfo_hz, float rate_ppm);
+                   int32_t cfo_hz, float rate_ppm, float sir_db, float lvl_dbfs);
 
     void startControlServer();
     void stopControlServer();
@@ -96,6 +98,8 @@ class QuadRFRadio : public RadioInterface, protected concurrency::NotifiedWorker
         int16_t rssi_dbm = 0;
         int32_t cfo_hz = 0;
         float rate_ppm = 0;
+        float sir_db = 0;
+        float lvl_dbfs = 0;
     };
 
     std::string socket_path_;

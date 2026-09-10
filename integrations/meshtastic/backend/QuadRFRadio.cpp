@@ -245,17 +245,19 @@ void QuadRFRadio::rxThreadMain()
                 rxBad++;
                 continue;
             }
-            enqueueRx(std::move(rx.air), rx.snr_db, rx.rssi_dbm, rx.cfo_hz, rx.rate_ppm);
+            enqueueRx(std::move(rx.air), rx.snr_db, rx.rssi_dbm, rx.cfo_hz, rx.rate_ppm,
+                      rx.sir_db, rx.lvl_dbfs);
         }
     }
 }
 
 void QuadRFRadio::enqueueRx(std::vector<uint8_t> air, float snr_db, int16_t rssi_dbm,
-                            int32_t cfo_hz, float rate_ppm)
+                            int32_t cfo_hz, float rate_ppm, float sir_db, float lvl_dbfs)
 {
     {
         std::lock_guard<std::mutex> lk(rx_mu_);
-        rx_q_.push_back(RxFrame{std::move(air), snr_db, rssi_dbm, cfo_hz, rate_ppm});
+        rx_q_.push_back(RxFrame{std::move(air), snr_db, rssi_dbm, cfo_hz, rate_ppm,
+                               sir_db, lvl_dbfs});
     }
     notify(ISR_RX, true);
 }
@@ -509,7 +511,8 @@ void QuadRFRadio::handleReceiveInterrupt()
         {
             std::lock_guard<std::mutex> lk(metrics_mu_);
             recent_metrics_.push_back({radioBuffer.header.id,
-                RxMetrics{rx.snr_db, rx.rssi_dbm, rx.cfo_hz, rx.rate_ppm, millis()}});
+                RxMetrics{rx.snr_db, rx.rssi_dbm, rx.cfo_hz, rx.rate_ppm, rx.sir_db,
+                          rx.lvl_dbfs, millis()}});
             if (recent_metrics_.size() > 64) {
                 recent_metrics_.pop_front();
             }

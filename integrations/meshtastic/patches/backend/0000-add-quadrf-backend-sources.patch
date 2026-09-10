@@ -8,7 +8,7 @@ diff --git a/src/platform/portduino/QuadRFRadio.h b/src/platform/portduino/QuadR
 new file mode 100644
 --- /dev/null
 +++ b/src/platform/portduino/QuadRFRadio.h
-@@ -0,0 +1,132 @@
+@@ -0,0 +1,136 @@
 +// SPDX-FileCopyrightText: 2026 Roy C. Gross
 +// SPDX-License-Identifier: GPL-3.0-only
 +#pragma once
@@ -61,6 +61,8 @@ new file mode 100644
 +        int16_t rssi_dbm = 0;
 +        int32_t cfo_hz = 0;
 +        float rate_ppm = 0;
++        float sir_db = 0;
++        float lvl_dbfs = 0;
 +        uint32_t timestamp_ms = 0;
 +    };
 +
@@ -90,7 +92,7 @@ new file mode 100644
 +    void rxThreadMain();
 +    bool writeFrame(const std::vector<uint8_t> &frame);
 +    void enqueueRx(std::vector<uint8_t> air, float snr_db, int16_t rssi_dbm,
-+                   int32_t cfo_hz, float rate_ppm);
++                   int32_t cfo_hz, float rate_ppm, float sir_db, float lvl_dbfs);
 +
 +    void startControlServer();
 +    void stopControlServer();
@@ -107,6 +109,8 @@ new file mode 100644
 +        int16_t rssi_dbm = 0;
 +        int32_t cfo_hz = 0;
 +        float rate_ppm = 0;
++        float sir_db = 0;
++        float lvl_dbfs = 0;
 +    };
 +
 +    std::string socket_path_;
@@ -145,7 +149,7 @@ diff --git a/src/platform/portduino/QuadRFRadio.cpp b/src/platform/portduino/Qua
 new file mode 100644
 --- /dev/null
 +++ b/src/platform/portduino/QuadRFRadio.cpp
-@@ -0,0 +1,806 @@
+@@ -0,0 +1,809 @@
 +// SPDX-FileCopyrightText: 2026 Roy C. Gross
 +// SPDX-License-Identifier: GPL-3.0-only
 +#include "QuadRFRadio.h"
@@ -393,17 +397,19 @@ new file mode 100644
 +                rxBad++;
 +                continue;
 +            }
-+            enqueueRx(std::move(rx.air), rx.snr_db, rx.rssi_dbm, rx.cfo_hz, rx.rate_ppm);
++            enqueueRx(std::move(rx.air), rx.snr_db, rx.rssi_dbm, rx.cfo_hz, rx.rate_ppm,
++                      rx.sir_db, rx.lvl_dbfs);
 +        }
 +    }
 +}
 +
 +void QuadRFRadio::enqueueRx(std::vector<uint8_t> air, float snr_db, int16_t rssi_dbm,
-+                            int32_t cfo_hz, float rate_ppm)
++                            int32_t cfo_hz, float rate_ppm, float sir_db, float lvl_dbfs)
 +{
 +    {
 +        std::lock_guard<std::mutex> lk(rx_mu_);
-+        rx_q_.push_back(RxFrame{std::move(air), snr_db, rssi_dbm, cfo_hz, rate_ppm});
++        rx_q_.push_back(RxFrame{std::move(air), snr_db, rssi_dbm, cfo_hz, rate_ppm,
++                               sir_db, lvl_dbfs});
 +    }
 +    notify(ISR_RX, true);
 +}
@@ -657,7 +663,8 @@ new file mode 100644
 +        {
 +            std::lock_guard<std::mutex> lk(metrics_mu_);
 +            recent_metrics_.push_back({radioBuffer.header.id,
-+                RxMetrics{rx.snr_db, rx.rssi_dbm, rx.cfo_hz, rx.rate_ppm, millis()}});
++                RxMetrics{rx.snr_db, rx.rssi_dbm, rx.cfo_hz, rx.rate_ppm, rx.sir_db,
++                          rx.lvl_dbfs, millis()}});
 +            if (recent_metrics_.size() > 64) {
 +                recent_metrics_.pop_front();
 +            }
@@ -956,7 +963,7 @@ diff --git a/src/platform/portduino/quadrf/air_ipc.hpp b/src/platform/portduino/
 new file mode 100644
 --- /dev/null
 +++ b/src/platform/portduino/quadrf/air_ipc.hpp
-@@ -0,0 +1,408 @@
+@@ -0,0 +1,415 @@
 +// SPDX-FileCopyrightText: 2026 Roy C. Gross
 +// SPDX-License-Identifier: Apache-2.0
 +#pragma once
@@ -976,6 +983,7 @@ new file mode 100644
 +//               QuadRFRadio sends 0 (PHY --freq, then appliance GUI LO).
 +//   RxIndicate: snr_centidb (i16) | rssi_dbm (i16) | cfo_hz (i32)
 +//               | rate_ppm_centi (i32) | frequency_hz (u64)
++//               | sir_centidb (i16) | lvl_centi_dbfs (i16)
 +//               | Meshtastic air frame (16..255 bytes)
 +//   SetModem:   preset (u8): 0=shortturbo, 1=shortfast. Rebuilds TX/RX DSP.
 +
@@ -998,7 +1006,7 @@ new file mode 100644
 +inline constexpr size_t kMinAirLen = 16;
 +inline constexpr size_t kMaxAirLen = 255;
 +inline constexpr size_t kTxMetaLen = 8;
-+inline constexpr size_t kRxMetaLen = 20;
++inline constexpr size_t kRxMetaLen = 24;
 +inline constexpr size_t kMaxBodyLen = kRxMetaLen + kMaxAirLen;
 +inline constexpr size_t kMaxFrameLen = kFrameHeaderLen + kMaxBodyLen;
 +
@@ -1029,6 +1037,8 @@ new file mode 100644
 +    int32_t cfo_hz = 0;
 +    float rate_ppm = 0.0f;
 +    uint64_t freq_hz = 0;
++    float sir_db = 0.0f;
++    float lvl_dbfs = 0.0f;
 +    std::vector<uint8_t> air;
 +};
 +
@@ -1193,6 +1203,8 @@ new file mode 100644
 +    detail::writeLe32(body.data() + 4, static_cast<uint32_t>(message.cfo_hz));
 +    detail::writeLe32(body.data() + 8, static_cast<uint32_t>(rateToCenti(message.rate_ppm)));
 +    detail::writeLe64(body.data() + 12, message.freq_hz);
++    detail::writeLe16(body.data() + 20, static_cast<uint16_t>(snrToCenti(message.sir_db)));
++    detail::writeLe16(body.data() + 22, static_cast<uint16_t>(snrToCenti(message.lvl_dbfs)));
 +    std::memcpy(body.data() + kRxMetaLen, message.air.data(), message.air.size());
 +    return detail::encodeFrame(MsgType::kRxIndicate, body.data(), body.size(), output);
 +}
@@ -1223,6 +1235,8 @@ new file mode 100644
 +    output.cfo_hz = static_cast<int32_t>(detail::readLe32(body + 4));
 +    output.rate_ppm = rateFromCenti(static_cast<int32_t>(detail::readLe32(body + 8)));
 +    output.freq_hz = detail::readLe64(body + 12);
++    output.sir_db = snrFromCenti(static_cast<int16_t>(detail::readLe16(body + 20)));
++    output.lvl_dbfs = snrFromCenti(static_cast<int16_t>(detail::readLe16(body + 22)));
 +    output.air.assign(body + kRxMetaLen, body + length);
 +    return true;
 +}
@@ -1411,7 +1425,7 @@ diff --git a/src/platform/portduino/QuadRFParrotModule.cpp b/src/platform/portdu
 new file mode 100644
 --- /dev/null
 +++ b/src/platform/portduino/QuadRFParrotModule.cpp
-@@ -0,0 +1,134 @@
+@@ -0,0 +1,136 @@
 +// SPDX-FileCopyrightText: 2026 Roy C. Gross
 +// SPDX-License-Identifier: GPL-3.0-only
 +#include "QuadRFParrotModule.h"
@@ -1510,11 +1524,13 @@ new file mode 100644
 +    }
 +
 +    std::string callsign = QuadRFRadio::instance ? QuadRFRadio::instance->getCallsign() : "NOCALL";
-+    char prefix[128];
++    char prefix[160];
 +    if (has_metrics) {
 +        float cfo_khz = static_cast<float>(metrics.cfo_hz) / 1000.0f;
-+        std::snprintf(prefix, sizeof(prefix), "[P: DE %s snr=%+.1fdB cfo=%+.1fkHz ppm=%+.1f] ",
-+                      callsign.c_str(), metrics.snr_db, cfo_khz, metrics.rate_ppm);
++        std::snprintf(prefix, sizeof(prefix),
++                      "[P: DE %s snr=%+.1fdB sir=%+.1fdB lvl=%+.1fdBFS cfo=%+.1fkHz ppm=%+.1f] ",
++                      callsign.c_str(), metrics.snr_db, metrics.sir_db, metrics.lvl_dbfs,
++                      cfo_khz, metrics.rate_ppm);
 +    } else {
 +        std::snprintf(prefix, sizeof(prefix), "[P: DE %s snr=%+.1fdB] ",
 +                      callsign.c_str(), mp.rx_snr);

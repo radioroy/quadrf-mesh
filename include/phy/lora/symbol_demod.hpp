@@ -39,14 +39,60 @@ struct ChipPeak {
     double chip = 0.0;  // sub-bin refined position, 0 .. 2^sf
     uint16_t chip_int = 0;
     double magnitude = 0.0;  // |peak|^2
-    double noise = 0.0;      // median bin power
+    double noise = 0.0;      // median bin power (SEARCH detector; leave alone)
     // Runner-up peak outside the main lobe. LO supply-ripple FM puts
     // sidebands +-f_ripple/bin chips from the true tone; when the ripple
     // deepens mid-symbol the sideband can out-vote the carrier, so the
     // decoder needs the loser as a CRC-checked alternate.
     uint16_t chip2_int = 0;
     double mag2 = 0.0;  // |second peak|^2
+    double lobe_power = 0.0;   // sum of peak +-2 chip bins
+    double total_power = 0.0;  // sum of all folded bins
 };
+
+// Channel SNR: main-lobe mean vs off-lobe mean, minus 10*log10(2^SF).
+// Comparable to Semtech PktSnr / PER-curve SNR (SF7 CR4/5 cliff ~ -7.5 dB).
+inline double channelSnrDb(const ChipPeak& pk, uint32_t n_chips, uint8_t sf) {
+    constexpr double kLobeBins = 5.0;
+    if (n_chips <= 5 || sf == 0 || pk.total_power <= 0.0) {
+        return 0.0;
+    }
+    const double noise = pk.total_power - pk.lobe_power;
+    const double n_noise = static_cast<double>(n_chips) - kLobeBins;
+    if (noise <= 0.0 || pk.lobe_power <= 0.0) {
+        return 40.0;
+    }
+    const double n_mean = noise / n_noise;
+    // Lobe *sum* is the tone energy (neighbors catch scallop); subtracting
+    // 5*n_mean removes the noise that also sits in those bins. Using the
+    // lobe mean instead would dilute a 1-bin tone by 10*log10(5) ~ 7 dB.
+    const double s = pk.lobe_power - kLobeBins * n_mean;
+    if (s <= 0.0 || n_mean <= 0.0) {
+        return -20.0;
+    }
+    return 10.0 * std::log10(s / n_mean) -
+           10.0 * std::log10(static_cast<double>(1u << sf));
+}
+
+// Winner vs second tone. High = clean; low = collision or LO-ripple sideband.
+inline double sirDb(const ChipPeak& pk) {
+    if (pk.lobe_power <= 0.0) {
+        return 0.0;
+    }
+    if (pk.mag2 <= 0.0) {
+        return 40.0;
+    }
+    return 10.0 * std::log10(pk.lobe_power / pk.mag2);
+}
+
+// Uncalibrated signal level from folded power. Amplitude 1.0 -> 0 dBFS.
+inline double levelDbfs(double mean_total_power, uint32_t n_fft) {
+    if (mean_total_power <= 0.0 || n_fft == 0) {
+        return -99.0;
+    }
+    return 10.0 * std::log10(mean_total_power) -
+           20.0 * std::log10(static_cast<double>(n_fft));
+}
 
 // Same-symbol sub-chip refine. When |frac| is large the peak sits near a
 // rounding boundary (half a chip at os=2 for a one-sample stream step);

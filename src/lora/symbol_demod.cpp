@@ -42,11 +42,19 @@ ChipPeak SymbolDemod::demod(const Sample* window, bool downchirp_ref) {
 
     uint32_t peak = 0;
     double peak_p = 0.0;
+    double tot = 0.0;
     for (uint32_t k = 0; k < n_chips_; ++k) {
+        tot += folded_[k];
         if (folded_[k] > peak_p) {
             peak_p = folded_[k];
             peak = k;
         }
+    }
+
+    double lobe = 0.0;
+    for (int d = -2; d <= 2; ++d) {
+        const uint32_t k = (peak + n_chips_ - 2u + static_cast<uint32_t>(d + 2)) % n_chips_;
+        lobe += folded_[k];
     }
 
     // second peak, excluding the main lobe (+-2 chips circular)
@@ -81,6 +89,8 @@ ChipPeak SymbolDemod::demod(const Sample* window, bool downchirp_ref) {
     result.noise = tmp[tmp.size() / 2];
     result.chip2_int = static_cast<uint16_t>(peak2);
     result.mag2 = peak2_p;
+    result.lobe_power = lobe;
+    result.total_power = tot;
     return result;
 }
 

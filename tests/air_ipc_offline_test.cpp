@@ -64,6 +64,8 @@ int main() {
         rx.cfo_hz = 12500;
         rx.rate_ppm = 1.5f;
         rx.freq_hz = 0x1122334455667788ULL;
+        rx.sir_db = 11.25f;
+        rx.lvl_dbfs = -19.70f;
         rx.air = vector_air;
         std::vector<uint8_t> rx_wire;
         CHECK(encodeRx(rx, rx_wire), "encode frozen RX vector");
@@ -88,6 +90,8 @@ int main() {
         CHECK(decodeRx(frames.front().body, decoded_rx) && decoded_rx.freq_hz == rx.freq_hz &&
                   decoded_rx.rssi_dbm == -91 && decoded_rx.cfo_hz == 12500 &&
                   decoded_rx.rate_ppm > 1.49f && decoded_rx.rate_ppm < 1.51f &&
+                  decoded_rx.sir_db > 11.24f && decoded_rx.sir_db < 11.26f &&
+                  decoded_rx.lvl_dbfs > -19.71f && decoded_rx.lvl_dbfs < -19.69f &&
                   decoded_rx.air == vector_air,
               "decode frozen RX vector body");
     }
@@ -142,6 +146,8 @@ int main() {
         rx.cfo_hz = -13500;
         rx.rate_ppm = -2.75f;
         rx.freq_hz = 5800000000ull;
+        rx.sir_db = 10.50f;
+        rx.lvl_dbfs = -20.25f;
         rx.air = air;
         std::vector<uint8_t> framed;
         CHECK(encodeRx(rx, framed), "encode RX");
@@ -160,6 +166,8 @@ int main() {
         // centi-dB quantization: within 0.01
         CHECK(got.snr_db > -7.26f && got.snr_db < -7.24f, "RX SNR centi");
         CHECK(got.rate_ppm > -2.76f && got.rate_ppm < -2.74f, "RX rate PPM centi");
+        CHECK(got.sir_db > 10.49f && got.sir_db < 10.51f, "RX SIR centi");
+        CHECK(got.lvl_dbfs > -20.26f && got.lvl_dbfs < -20.24f, "RX LVL centi");
     }
 
     // --- reject oversize / short air / bad version ---

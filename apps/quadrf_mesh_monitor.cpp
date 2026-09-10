@@ -34,6 +34,8 @@ struct PacketRecord {
     uint64_t ts_ms = 0;
     std::string time_str;
     float snr_db = 0.0f;
+    float sir_db = 0.0f;
+    float lvl_dbfs = 0.0f;
     int32_t cfo_hz = 0;
     float rate_ppm = 0.0f;
     uint32_t from_node = 0;
@@ -79,6 +81,34 @@ constexpr Color kStatusAmber    = {234, 179, 8, 255};
 constexpr Color kStatusRed      = {239, 68, 68, 255};
 constexpr Color kBtnNormal      = {38, 38, 38, 255};
 constexpr Color kBtnHover       = {50, 50, 50, 255};
+
+// Channel SNR: SF7 CR4/5 cliff is ~-7.5 dB. Green = ~7 dB of decode room.
+Color snrColor(float snr_db, bool echo) {
+    if (echo) {
+        return kTextMuted;
+    }
+    if (snr_db >= 0.0f) {
+        return kStatusGreen;
+    }
+    if (snr_db >= -7.5f) {
+        return kStatusAmber;
+    }
+    return kStatusRed;
+}
+
+// SIR: 10 dB ~ clean; 6 dB is near the 0.30 mag2/peak CRC-alternate gate.
+Color sirColor(float sir_db, bool echo) {
+    if (echo) {
+        return kTextMuted;
+    }
+    if (sir_db >= 10.0f) {
+        return kStatusGreen;
+    }
+    if (sir_db >= 6.0f) {
+        return kStatusAmber;
+    }
+    return kStatusRed;
+}
 
 void setColor(SDL_Renderer* ren, const Color& c) {
     SDL_SetRenderDrawColor(ren, c.r, c.g, c.b, c.a);
@@ -282,6 +312,12 @@ void telemetryClientThread(AppState& state, const std::string& sock_path) {
                 PacketRecord rec;
                 if (parseJsonField(line, "ts", val)) rec.ts_ms = std::strtoull(val.c_str(), nullptr, 10);
                 if (parseJsonField(line, "snr", val)) rec.snr_db = std::strtof(val.c_str(), nullptr);
+                if (parseJsonField(line, "sir", val)) rec.sir_db = std::strtof(val.c_str(), nullptr);
+                if (parseJsonField(line, "lvl", val)) {
+                    rec.lvl_dbfs = std::strtof(val.c_str(), nullptr);
+                } else if (parseJsonField(line, "rssi", val)) {
+                    rec.lvl_dbfs = std::strtof(val.c_str(), nullptr);
+                }
                 if (parseJsonField(line, "cfo", val)) rec.cfo_hz = std::strtol(val.c_str(), nullptr, 10);
                 if (parseJsonField(line, "ppm", val) || parseJsonField(line, "rate_ppm", val)) {
                     rec.rate_ppm = std::strtof(val.c_str(), nullptr);
@@ -479,7 +515,7 @@ int main(int argc, char* argv[]) {
         return 1;
     }
 
-    const int kWinWidth = 840;
+    const int kWinWidth = 1060;
     const int kWinHeight = 560;
 
     SDL_Window* win = SDL_CreateWindow(
@@ -674,15 +710,16 @@ int main(int argc, char* argv[]) {
             drawString(ren, 220, 165, buf, last_rec.is_echo ? kTextMuted : kTextPrimary);
 
             snprintf(buf, sizeof(buf), "SNR: %+5.1f dB", last_rec.snr_db);
-            Color snr_c = last_rec.is_echo ? kTextMuted :
-                          ((last_rec.snr_db >= 10.0f) ? kStatusGreen : kStatusAmber);
-            drawString(ren, 345, 165, buf, snr_c);
+            drawString(ren, 345, 165, buf, snrColor(last_rec.snr_db, last_rec.is_echo));
+
+            snprintf(buf, sizeof(buf), "SIR: %+5.1f dB", last_rec.sir_db);
+            drawString(ren, 490, 165, buf, sirColor(last_rec.sir_db, last_rec.is_echo));
+
+            snprintf(buf, sizeof(buf), "LVL: %+5.1f dBFS", last_rec.lvl_dbfs);
+            drawString(ren, 635, 165, buf, last_rec.is_echo ? kTextMuted : kTextPrimary);
 
             snprintf(buf, sizeof(buf), "CFO: %+5d Hz", last_rec.cfo_hz);
-            drawString(ren, 470, 165, buf, last_rec.is_echo ? kTextMuted : kTextPrimary);
-
-            snprintf(buf, sizeof(buf), "Rate: %+4.1f ppm", last_rec.rate_ppm);
-            drawString(ren, 605, 165, buf, last_rec.is_echo ? kTextMuted : kTextSecondary);
+            drawString(ren, 800, 165, buf, last_rec.is_echo ? kTextMuted : kTextPrimary);
         } else {
             drawString(ren, 35, 165, "Awaiting physical layer frame decodes...", kTextMuted);
         }
@@ -700,13 +737,15 @@ int main(int argc, char* argv[]) {
         fillRect(ren, 21, 234, kWinWidth - 42, 1, kCardBorder);
 
         drawString(ren, 30, 212, "TIME", kTextSecondary);
-        drawString(ren, 150, 212, "FROM NODE", kTextSecondary);
-        drawString(ren, 285, 212, "TO NODE", kTextSecondary);
-        drawString(ren, 370, 212, "SNR (dB)", kTextSecondary);
-        drawString(ren, 440, 212, "CFO (Hz)", kTextSecondary);
-        drawString(ren, 510, 212, "RATE(ppm)", kTextSecondary);
-        drawString(ren, 595, 212, "LEN", kTextSecondary);
-        drawString(ren, 645, 212, "PACKET ID", kTextSecondary);
+        drawString(ren, 110, 212, "FROM NODE", kTextSecondary);
+        drawString(ren, 240, 212, "TO NODE", kTextSecondary);
+        drawString(ren, 330, 212, "SNR (dB)", kTextSecondary);
+        drawString(ren, 412, 212, "SIR (dB)", kTextSecondary);
+        drawString(ren, 494, 212, "LVL (dBFS)", kTextSecondary);
+        drawString(ren, 596, 212, "CFO (Hz)", kTextSecondary);
+        drawString(ren, 688, 212, "RATE (ppm)", kTextSecondary);
+        drawString(ren, 790, 212, "LEN", kTextSecondary);
+        drawString(ren, 838, 212, "PACKET ID", kTextSecondary);
 
         // Table Rows
         std::vector<PacketRecord> snap_packets;
@@ -728,7 +767,9 @@ int main(int argc, char* argv[]) {
                 Color time_c = p.is_echo ? kTextMuted : kTextSecondary;
                 Color from_c = p.is_echo ? kTextMuted : kTextPrimary;
                 Color to_c   = p.is_echo ? kTextMuted : kTextSecondary;
-                Color snr_c  = p.is_echo ? kTextMuted : ((p.snr_db >= 10.0f) ? kStatusGreen : kStatusAmber);
+                Color snr_c  = snrColor(p.snr_db, p.is_echo);
+                Color sir_c  = sirColor(p.sir_db, p.is_echo);
+                Color lvl_c  = p.is_echo ? kTextMuted : kTextPrimary;
                 Color cfo_c  = p.is_echo ? kTextMuted : kTextPrimary;
                 Color rate_c = p.is_echo ? kTextMuted : kTextSecondary;
                 Color len_c  = p.is_echo ? kTextMuted : kTextSecondary;
@@ -740,24 +781,30 @@ int main(int argc, char* argv[]) {
                 if (p.is_echo) {
                     from_str += " [SELF]";
                 }
-                drawString(ren, 150, y_row, from_str, from_c);
-                drawString(ren, 285, y_row, formatNodeId(p.to_node), to_c);
+                drawString(ren, 110, y_row, from_str, from_c);
+                drawString(ren, 240, y_row, formatNodeId(p.to_node), to_c);
 
                 char buf[64];
                 snprintf(buf, sizeof(buf), "%+5.1f", p.snr_db);
-                drawString(ren, 370, y_row, buf, snr_c);
+                drawString(ren, 330, y_row, buf, snr_c);
+
+                snprintf(buf, sizeof(buf), "%+5.1f", p.sir_db);
+                drawString(ren, 412, y_row, buf, sir_c);
+
+                snprintf(buf, sizeof(buf), "%+5.1f", p.lvl_dbfs);
+                drawString(ren, 494, y_row, buf, lvl_c);
 
                 snprintf(buf, sizeof(buf), "%+5d", p.cfo_hz);
-                drawString(ren, 440, y_row, buf, cfo_c);
+                drawString(ren, 596, y_row, buf, cfo_c);
 
                 snprintf(buf, sizeof(buf), "%+4.1f", p.rate_ppm);
-                drawString(ren, 510, y_row, buf, rate_c);
+                drawString(ren, 688, y_row, buf, rate_c);
 
                 snprintf(buf, sizeof(buf), "%3u", p.payload_len);
-                drawString(ren, 595, y_row, buf, len_c);
+                drawString(ren, 790, y_row, buf, len_c);
 
                 snprintf(buf, sizeof(buf), "0x%08x", p.packet_id);
-                drawString(ren, 645, y_row, buf, id_c);
+                drawString(ren, 838, y_row, buf, id_c);
 
                 y_row += 20;
             }

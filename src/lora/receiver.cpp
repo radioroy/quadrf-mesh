@@ -4,6 +4,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <limits>
 #ifdef RX_TRACE
 #include <cstdio>
 #endif
@@ -447,6 +448,9 @@ bool Receiver::stepSync() {
     needed_syms_ = 8;
     have_len_ = false;
     snr_acc_ = 0.0;
+    sir_min_ = std::numeric_limits<double>::infinity();
+    pwr_acc_ = 0.0;
+    metric_n_ = 0;
     state_ = State::kData;
     resampled_.clear();
     return true;
@@ -540,8 +544,14 @@ bool Receiver::stepData() {
             }
         }
         cur_.raw_values.push_back(value);
-        if (pk.noise > 0.0) {
-            snr_acc_ += 10.0 * std::log10(pk.magnitude / pk.noise);
+        if (pk.total_power > 0.0) {
+            snr_acc_ += channelSnrDb(pk, n_chips_, params_.spreading_factor);
+            const double sir = sirDb(pk);
+            if (sir < sir_min_) {
+                sir_min_ = sir;
+            }
+            pwr_acc_ += pk.total_power;
+            ++metric_n_;
         }
 
         // Decision-directed PI timing loop. Residual rate error shows up as
@@ -721,8 +731,10 @@ void Receiver::finalizeData() {
             }
         }
     }
-    if (!cur_.raw_values.empty()) {
-        cur_.snr_db = snr_acc_ / static_cast<double>(cur_.raw_values.size());
+    if (metric_n_ > 0) {
+        cur_.snr_db = snr_acc_ / static_cast<double>(metric_n_);
+        cur_.sir_db = std::isfinite(sir_min_) ? sir_min_ : 0.0;
+        cur_.lvl_dbfs = levelDbfs(pwr_acc_ / static_cast<double>(metric_n_), sps_);
     }
     out_.push_back(std::move(cur_));
     cur_ = ReceivedFrame{};

@@ -30,7 +30,8 @@ def ssh_pass() -> str:
     return p
 
 RX_RE = re.compile(
-    r"phy RX air=(?P<air>\d+) snr=(?P<snr>[\d\.\-]+) cfo=(?P<cfo>[\d\.\-]+) ppm=(?P<ppm>[\d\.\-]+)(?P<echo> echo-drop)?"
+    r"phy RX air=(?P<air>\d+) snr=(?P<snr>[\d\.\-]+) cfo=(?P<cfo>[\d\.\-]+) ppm=(?P<ppm>[\d\.\-]+)"
+    r"(?: sir=(?P<sir>[\d\.\-]+) lvl=(?P<lvl>[\d\.\-]+))?(?P<echo> echo-drop)?"
 )
 ROUTER_RX_RE = re.compile(
     r"Received text msg from=(?P<from>0x[0-9a-f]+), id=(?P<id>0x[0-9a-f]+), msg=(?P<msg>.+)"
@@ -93,6 +94,8 @@ class NodeLogCollector:
                     "snr": float(m.group("snr")),
                     "cfo": float(m.group("cfo")),
                     "ppm": float(m.group("ppm")),
+                    "sir": float(m.group("sir")) if m.group("sir") else None,
+                    "lvl": float(m.group("lvl")) if m.group("lvl") else None,
                     "is_echo": bool(m.group("echo")),
                     "raw": line,
                 }
@@ -196,6 +199,8 @@ def run_campaign(
 
             snr1 = q2_peer_rx[0]["snr"] if q2_peer_rx else None
             cfo1 = q2_peer_rx[0]["cfo"] if q2_peer_rx else None
+            sir1 = q2_peer_rx[0].get("sir") if q2_peer_rx else None
+            lvl1 = q2_peer_rx[0]["lvl"] if q2_peer_rx else None
 
             res1 = {
                 "round": r,
@@ -204,11 +209,17 @@ def run_campaign(
                 "decoded": recvd1,
                 "snr": snr1,
                 "cfo": cfo1,
+                "sir": sir1,
+                "lvl": lvl1,
                 "rx_count": len(q2_peer_rx),
                 "text_count": len(q2_text),
             }
             q1_to_q2_results.append(res1)
-            print(f"  Result Q1->Q2: sent={ok1}, decoded={recvd1}, snr={snr1} dB, cfo={cfo1} Hz, rx_events={len(q2_peer_rx)}")
+            print(
+                f"  Result Q1->Q2: sent={ok1}, decoded={recvd1}, "
+                f"snr={snr1} dB, sir={sir1} dB, lvl={lvl1} dBFS, "
+                f"cfo={cfo1} Hz, rx_events={len(q2_peer_rx)}"
+            )
 
             # Pause to let rebroadcasts settle
             time.sleep(pause_s)
@@ -233,6 +244,8 @@ def run_campaign(
 
             snr2 = q1_peer_rx[0]["snr"] if q1_peer_rx else None
             cfo2 = q1_peer_rx[0]["cfo"] if q1_peer_rx else None
+            sir2 = q1_peer_rx[0].get("sir") if q1_peer_rx else None
+            lvl2 = q1_peer_rx[0]["lvl"] if q1_peer_rx else None
 
             res2 = {
                 "round": r,
@@ -241,11 +254,17 @@ def run_campaign(
                 "decoded": recvd2,
                 "snr": snr2,
                 "cfo": cfo2,
+                "sir": sir2,
+                "lvl": lvl2,
                 "rx_count": len(q1_peer_rx),
                 "text_count": len(q1_text),
             }
             q2_to_q1_results.append(res2)
-            print(f"  Result Q2->Q1: sent={ok2}, decoded={recvd2}, snr={snr2} dB, cfo={cfo2} Hz, rx_events={len(q1_peer_rx)}")
+            print(
+                f"  Result Q2->Q1: sent={ok2}, decoded={recvd2}, "
+                f"snr={snr2} dB, sir={sir2} dB, lvl={lvl2} dBFS, "
+                f"cfo={cfo2} Hz, rx_events={len(q1_peer_rx)}"
+            )
 
             if r < rounds:
                 time.sleep(pause_s)

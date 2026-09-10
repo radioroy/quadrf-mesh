@@ -17,6 +17,7 @@
 //               QuadRFRadio sends 0 (PHY --freq, then appliance GUI LO).
 //   RxIndicate: snr_centidb (i16) | rssi_dbm (i16) | cfo_hz (i32)
 //               | rate_ppm_centi (i32) | frequency_hz (u64)
+//               | sir_centidb (i16) | lvl_centi_dbfs (i16)
 //               | Meshtastic air frame (16..255 bytes)
 //   SetModem:   preset (u8): 0=shortturbo, 1=shortfast. Rebuilds TX/RX DSP.
 
@@ -39,7 +40,7 @@ inline constexpr size_t kFrameHeaderLen = 6;
 inline constexpr size_t kMinAirLen = 16;
 inline constexpr size_t kMaxAirLen = 255;
 inline constexpr size_t kTxMetaLen = 8;
-inline constexpr size_t kRxMetaLen = 20;
+inline constexpr size_t kRxMetaLen = 24;
 inline constexpr size_t kMaxBodyLen = kRxMetaLen + kMaxAirLen;
 inline constexpr size_t kMaxFrameLen = kFrameHeaderLen + kMaxBodyLen;
 
@@ -70,6 +71,8 @@ struct RxIndicate {
     int32_t cfo_hz = 0;
     float rate_ppm = 0.0f;
     uint64_t freq_hz = 0;
+    float sir_db = 0.0f;
+    float lvl_dbfs = 0.0f;
     std::vector<uint8_t> air;
 };
 
@@ -234,6 +237,8 @@ inline bool encodeRx(const RxIndicate& message, std::vector<uint8_t>& output) {
     detail::writeLe32(body.data() + 4, static_cast<uint32_t>(message.cfo_hz));
     detail::writeLe32(body.data() + 8, static_cast<uint32_t>(rateToCenti(message.rate_ppm)));
     detail::writeLe64(body.data() + 12, message.freq_hz);
+    detail::writeLe16(body.data() + 20, static_cast<uint16_t>(snrToCenti(message.sir_db)));
+    detail::writeLe16(body.data() + 22, static_cast<uint16_t>(snrToCenti(message.lvl_dbfs)));
     std::memcpy(body.data() + kRxMetaLen, message.air.data(), message.air.size());
     return detail::encodeFrame(MsgType::kRxIndicate, body.data(), body.size(), output);
 }
@@ -264,6 +269,8 @@ inline bool decodeRx(const uint8_t* body, size_t length, RxIndicate& output) {
     output.cfo_hz = static_cast<int32_t>(detail::readLe32(body + 4));
     output.rate_ppm = rateFromCenti(static_cast<int32_t>(detail::readLe32(body + 8)));
     output.freq_hz = detail::readLe64(body + 12);
+    output.sir_db = snrFromCenti(static_cast<int16_t>(detail::readLe16(body + 20)));
+    output.lvl_dbfs = snrFromCenti(static_cast<int16_t>(detail::readLe16(body + 22)));
     output.air.assign(body + kRxMetaLen, body + length);
     return true;
 }

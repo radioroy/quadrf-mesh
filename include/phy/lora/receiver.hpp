@@ -19,7 +19,9 @@ struct ReceivedFrame {
     double cfo_chips = 0.0;    // carrier offset, one chip = bw / 2^sf Hz
     double cfo_hz = 0.0;
     double tau_samples = 0.0;  // fine timing offset solved from up/down peaks
-    double snr_db = 0.0;       // mean dechirp peak-to-floor over data symbols
+    double snr_db = 0.0;       // mean channel SNR over data symbols (PG removed)
+    double sir_db = 0.0;       // worst-symbol 10*log10(lobe/mag2)
+    double lvl_dbfs = 0.0;     // mean folded power, dBFS (not dBm)
     double sync_err0 = 0.0;
     double sync_err1 = 0.0;
     bool sync_ok = false;
@@ -121,6 +123,9 @@ private:
     bool have_len_ = false;
     double ref_ = 0.0;
     double snr_acc_ = 0.0;
+    double sir_min_ = 0.0;
+    double pwr_acc_ = 0.0;
+    size_t metric_n_ = 0;
     ReceivedFrame cur_;
     IQBuffer win_;
 

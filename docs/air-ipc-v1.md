@@ -51,7 +51,9 @@ Sent from `quadrf-lora-phy` to the mesh daemon when a frame is received.
 | 4 | 4 | CFO | int32, signed carrier frequency offset in Hz |
 | 8 | 4 | Rate PPM | int32, signed sample-rate offset in hundredths of a ppm (e.g. `150` = +1.50 ppm) |
 | 12 | 8 | Center frequency | uint64, PHY configured center in Hz (startup `--freq`, not a live GUI LO readout) |
-| 20 | 16..255 | Payload | Meshtastic air-frame bytes |
+| 20 | 2 | SIR | int16, worst-symbol second-tone ratio in hundredths of a dB |
+| 22 | 2 | LVL | int16, uncalibrated signal level in hundredths of a dBFS |
+| 24 | 16..255 | Payload | Meshtastic air-frame bytes |
 
 ### Type 3: `SetModem`
 

@@ -241,6 +241,45 @@ int main() {
         check(rxMatches(frames, payload), buf);
     }
 
+    std::printf("== 6b. channel SNR / SIR / LVL (Short Turbo) ==\n");
+    {
+        LoraParams st = meshtasticParams(MeshtasticPreset::kShortTurbo);
+        const auto st_payload = testPayload(16);
+        const auto st_chips = encodeFrame(st, st_payload);
+        const Modulator st_mod(st);
+        const IQBuffer st_frame = st_mod.frame(st_chips);
+        const size_t st_sps = st_mod.samplesPerSymbol();
+
+        Receiver rx_clean(st);
+        const auto clean = runReceiver(rx_clean, pad(st_frame, 2 * st_sps + 231, 3 * st_sps), 71);
+        check(rxMatches(clean, st_payload), "clean ShortTurbo decode");
+        if (!clean.empty()) {
+            char buf[128];
+            std::snprintf(buf, sizeof(buf), "clean snr=%.1f sir=%.1f lvl=%.1f",
+                          clean[0].snr_db, clean[0].sir_db, clean[0].lvl_dbfs);
+            // Noiseless: FFT leakage still sets a ceiling; SIR is a
+            // second-bin ratio; LVL near 10*log10(0.64) = -1.9 dBFS.
+            const bool snr_hi = clean[0].snr_db > 8.0;
+            const bool sir_hi = clean[0].sir_db > 10.0;
+            const bool lvl_ok = clean[0].lvl_dbfs > -20.0 && clean[0].lvl_dbfs < 5.0;
+            check(snr_hi && sir_hi && lvl_ok, buf);
+        }
+
+        Receiver rx_n(st);
+        const auto noisy = runReceiver(
+            rx_n, addNoise(pad(st_frame, 2 * st_sps + 231, 3 * st_sps), 20.0, 77), 72);
+        check(rxMatches(noisy, st_payload), "20 dB AWGN ShortTurbo decode");
+        if (!noisy.empty()) {
+            char buf[128];
+            std::snprintf(buf, sizeof(buf), "20 dB AWGN snr=%.1f sir=%.1f lvl=%.1f",
+                          noisy[0].snr_db, noisy[0].sir_db, noisy[0].lvl_dbfs);
+            // Channel SNR (PG removed), not old peak/median (~40 dB).
+            const bool snr_ok = noisy[0].snr_db > 5.0 && noisy[0].snr_db < 28.0;
+            const bool sir_ok = noisy[0].sir_db > 8.0;
+            check(snr_ok && sir_ok, buf);
+        }
+    }
+
     std::printf("== 7. streaming receiver: back-to-back frames ==\n");
     {
         IQBuffer capture(2 * sps + 517, Sample(0, 0));

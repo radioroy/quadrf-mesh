@@ -34,6 +34,7 @@
 
 #include <atomic>
 #include <chrono>
+#include <cmath>
 #include <condition_variable>
 #include <csignal>
 #include <cstdio>
@@ -736,7 +737,8 @@ int main(int argc, char** argv) {
         };
 
         auto sendRxIndicate = [&](const std::vector<uint8_t>& air, float snr_db,
-                                  int32_t cfo_hz, float rate_ppm) {
+                                  int32_t cfo_hz, float rate_ppm, float sir_db,
+                                  float lvl_dbfs) {
             ++rx_delivered;
             if (client_fd < 0) {
                 return;
@@ -747,6 +749,8 @@ int main(int argc, char** argv) {
             rx.cfo_hz = cfo_hz;
             rx.rate_ppm = rate_ppm;
             rx.freq_hz = center_hz;
+            rx.sir_db = sir_db;
+            rx.lvl_dbfs = lvl_dbfs;
             rx.air = air;
             std::vector<uint8_t> framed;
             if (!encodeRx(rx, framed)) {
@@ -820,12 +824,14 @@ int main(int argc, char** argv) {
             }
             const auto now_ms = std::chrono::duration_cast<std::chrono::milliseconds>(
                 std::chrono::system_clock::now().time_since_epoch()).count();
-            char line[384];
+            char line[448];
             int len = snprintf(line, sizeof(line),
                 "{\"ts\":%lld,\"from\":\"0x%08x\",\"to\":\"0x%08x\",\"id\":\"0x%08x\","
-                "\"snr\":%.2f,\"rssi\":%d,\"cfo\":%d,\"ppm\":%.2f,\"pre\":%u,\"len\":%zu,\"echo\":%d}\n",
+                "\"snr\":%.2f,\"sir\":%.2f,\"lvl\":%.1f,\"rssi\":%d,\"cfo\":%d,\"ppm\":%.2f,"
+                "\"pre\":%u,\"len\":%zu,\"echo\":%d}\n",
                 (long long)now_ms, from_node, to_node, packet_id,
-                snr, 0, (int)r.cfo_hz, (float)r.rate_ppm,
+                snr, (float)r.sir_db, (float)r.lvl_dbfs, (int)std::lround(r.lvl_dbfs),
+                (int)r.cfo_hz, (float)r.rate_ppm,
                 (unsigned)r.preamble_symbols, r.decode.payload.size(), echo ? 1 : 0);
             if (len <= 0) {
                 return;
@@ -859,6 +865,7 @@ int main(int argc, char** argv) {
                               << r.decode.header.valid << " crc=" << r.decode.crc_ok
                               << " pre=" << r.preamble_symbols << " cfo=" << r.cfo_hz
                               << " ppm=" << r.rate_ppm << " snr=" << r.snr_db
+                              << " sir=" << r.sir_db << " lvl=" << r.lvl_dbfs
                               << " plen=" << r.decode.payload.size() << "\n";
                     continue;
                 }
@@ -868,11 +875,14 @@ int main(int argc, char** argv) {
                 broadcastTelemetry(r, snr, echo);
                 std::cerr << "phy RX air=" << r.decode.payload.size() << " snr=" << snr
                           << " cfo=" << r.cfo_hz << " ppm=" << r.rate_ppm
+                          << " sir=" << r.sir_db << " lvl=" << r.lvl_dbfs
                           << (echo ? " echo-drop" : "") << "\n";
                 if (echo) {
                     continue;
                 }
-                sendRxIndicate(r.decode.payload, snr, static_cast<int32_t>(r.cfo_hz), static_cast<float>(r.rate_ppm));
+                sendRxIndicate(r.decode.payload, snr, static_cast<int32_t>(r.cfo_hz),
+                               static_cast<float>(r.rate_ppm), static_cast<float>(r.sir_db),
+                               static_cast<float>(r.lvl_dbfs));
                 if (session) {
                     session->handleAirFrame(r.decode.payload.data(), r.decode.payload.size(), snr);
                 }

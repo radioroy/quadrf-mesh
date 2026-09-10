@@ -29,7 +29,7 @@
 
 | Socket Path                      | Owner (Server)                       | Client                | Protocol               | Function                                                                            |
 | -------------------------------- | ------------------------------------ | --------------------- | ---------------------- | ----------------------------------------------------------------------------------- |
-| `/run/quadrf/phy_telemetry.sock` | `quadrf-lora-phy`                    | `quadrf-mesh-monitor` | Line-delimited JSON    | CRC-pass decode tap (including self-TX RF leak) plus a `{"type":"modem"}` status line on client connect and `SetModem`. |
+| `/run/quadrf/phy_telemetry.sock` | `quadrf-lora-phy`                    | `quadrf-mesh-monitor` | Line-delimited JSON    | CRC-pass decode tap (including self-TX RF leak) plus a `{"type":"modem"}` status line on client connect and `SetModem`. Decode lines include `snr` (channel SNR, dB), `sir` (worst-symbol lobe/second-peak, dB), `lvl` (dBFS), and `rssi` (integer dBFS; not calibrated dBm). |
 | `/run/quadrf/mesh_control.sock`  | `quadrf-meshtasticd` (`QuadRFRadio`) | `quadrf-mesh-monitor` | Line-delimited ASCII   | Runtime control of daemon test modes (`RANGE`, `PARROT`) and callsign (`CALLSIGN`). Permissions: `0666`. |
 | `/run/quadrf/phy.sock`           | `quadrf-lora-phy`                    | `quadrf-meshtasticd`  | Air-IPC binary framing | Framing protocol passing air packets between PHY and Meshtastic daemon.             |
 
@@ -84,8 +84,8 @@
   - **Self-Packet Filter**: Drops frames matching local node ID (`isFromUs(&mp)`).
   - **Per-Node Rate Limiter**: 16-slot circular cache enforcing a $1000\text{ ms}$ minimum cooldown per sender node ID (`mp.from`). Packets received inside the cooldown window are dropped.
   - **RF Metrics Echo**: Retrieves physical layer metrics stored by `QuadRFRadio` for the specific `mp.id`:
-    - Format: `[P: snr=%+.1fdB cfo=%+.1fkHz ppm=%+.1f] <original payload>`
-    - Falls back to `[P: snr=%+.1fdB]`  if cached metrics are missing.
+    - Format: `[P: DE <call> snr=%+.1fdB sir=%+.1fdB lvl=%+.1fdBFS cfo=%+.1fkHz ppm=%+.1f] <original payload>`
+    - Falls back to `[P: DE <call> snr=%+.1fdB]` if cached metrics are missing.
   - **Reply Dispatch**: Sends response to `NODENUM_BROADCAST` (`0xFFFFFFFF`) on the same mesh channel with `hop_limit = 0` and `want_ack = false`.
 
 
