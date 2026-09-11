@@ -86,7 +86,7 @@ Other presets selected in Meshtastic are unsupported and revert to Short Turbo. 
 meshtastic --host 127.0.0.1:4403 --set lora.modem_preset SHORT_FAST
 ```
 
-`quadrf-lora-phy` owns the radio hardware. Startup center frequency is set by `QUADRF_LORA_PHY_FREQ` (default 5800 MHz). Live retuning can be done through the QuadRF appliance GUI LO slider. Meshtastic `lora.override_frequency` must remain `0` (it does not tune the radio).
+`quadrf-lora-phy` owns the radio hardware. Startup RF (frequency, gain, bandwidth, antenna mask, preset) is set in `/etc/default/quadrf-lora-phy`; restart `quadrf-lora-phy` (and `quadrf-meshtasticd`) after edits. Live retuning can be done through the QuadRF appliance GUI LO slider. The GUI TX/RX Ch: checkboxes and 4-channel (interleaved) RX mode also override the packaged `--tx-ant 1 --rx-ant 1` until PHY is restarted. Meshtastic `lora.override_frequency` must remain `0` (it does not tune the radio).
 
 ## Building Debian packages
 

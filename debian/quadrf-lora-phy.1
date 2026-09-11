@@ -17,7 +17,12 @@ for the complete option list. The production socket default is
 .IR /run/quadrf/phy.sock .
 .SH FILES
 .I /etc/default/quadrf-lora-phy
-contains service defaults.
+is the operator config for the systemd unit (frequency, gain, bandwidth,
+antenna bitmask, preset). Restart
+.B quadrf-lora-phy
+and
+.B quadrf-meshtasticd
+after edits.
 .SH WARNING
 The operator is responsible for lawful RF configuration and operation.
 .SH AUTHOR

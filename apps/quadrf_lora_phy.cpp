@@ -529,7 +529,8 @@ int main(int argc, char** argv) {
             }
             std::cerr << "quadrf-lora-phy: OTA center=" << center_mhz << " MHz, tx_gain=" << tx_gain
                       << " dB (bw=" << tx_bw << " MHz), rx_gain=" << rx_gain
-                      << " dB (bw=" << rx_bw << " MHz), pa_drain=" << pa_drain_ms
+                      << " dB (bw=" << rx_bw << " MHz), tx_ant=" << tx_ant
+                      << ", rx_ant=" << rx_ant << ", pa_drain=" << pa_drain_ms
                       << " ms, rx duck=0 dB during TX\n";
         } else {
             if (rx_only) {

@@ -24,10 +24,16 @@ PhoneAPI on TCP 4403, not 9443.
 Radio configuration
 -------------------
 
-`quadrf-lora-phy` is authoritative for radio hardware settings. Frequency
-(`QUADRF_LORA_PHY_FREQ`) and preset (`QUADRF_LORA_PHY_PRESET`) in
-`/etc/default/quadrf-lora-phy` program the RF frontend at start. The
-appliance GUI LO control can retune frequency until PHY restarts.
+`quadrf-lora-phy` is authoritative for radio hardware settings. Edit
+`/etc/default/quadrf-lora-phy` and restart both services:
+
+  sudo systemctl restart quadrf-lora-phy quadrf-meshtasticd
+
+Keys (packaged values): `QUADRF_LORA_PHY_FREQ` (5800), `QUADRF_LORA_PHY_PRESET`
+(shortturbo), `QUADRF_LORA_PHY_TX_GAIN` (25), `QUADRF_LORA_PHY_RX_GAIN` (45),
+`QUADRF_LORA_PHY_TX_ANT` / `QUADRF_LORA_PHY_RX_ANT` (bitmask, 1 = antenna 1),
+`QUADRF_LORA_PHY_TX_BW` (20) / `QUADRF_LORA_PHY_RX_BW` (4). The appliance GUI
+can retune LO, gain, and Ch: masks until PHY restarts.
 
 Meshtastic `lora.override_frequency` is kept at 0 and does not tune the
 radio. `lora.modem_preset` is sent to PHY (Short Turbo or Short Fast):

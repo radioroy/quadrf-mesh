@@ -60,6 +60,14 @@ grep -qx 'QUADRF_LORA_PHY_PRESET=shortturbo' /etc/default/quadrf-lora-phy || {
   echo "expected QUADRF_LORA_PHY_PRESET=shortturbo in /etc/default/quadrf-lora-phy" >&2
   exit 1
 }
+grep -qx 'QUADRF_LORA_PHY_TX_ANT=1' /etc/default/quadrf-lora-phy || {
+  echo "expected QUADRF_LORA_PHY_TX_ANT=1 in /etc/default/quadrf-lora-phy" >&2
+  exit 1
+}
+grep -qx 'QUADRF_LORA_PHY_RX_ANT=1' /etc/default/quadrf-lora-phy || {
+  echo "expected QUADRF_LORA_PHY_RX_ANT=1 in /etc/default/quadrf-lora-phy" >&2
+  exit 1
+}
 [[ -f /etc/default/quadrf-meshtasticd ]] || {
   echo "missing /etc/default/quadrf-meshtasticd" >&2
   exit 1

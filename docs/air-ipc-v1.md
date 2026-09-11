@@ -38,7 +38,7 @@ Sent from the mesh daemon to `quadrf-lora-phy` to transmit a frame.
 
 `quadrf-lora-phy` does not retune from this field. Modulation uses whichever center the local LO is already on.
 
-PHY programs TX/RX frequency once at startup from `--freq` (`QUADRF_LORA_PHY_FREQ`). After that, mute/unmute only gates PA_BIAS / FPGA `disable_tx` and leaves frequency, gain, and bandwidth alone. The GUI LO control on `quadrf.local` overrides the packaged PHY center until PHY is restarted. Meshtastic `lora.override_frequency` stays `0` and does not tune the radio.
+PHY programs TX/RX frequency, gain, bandwidth, and antenna mask once at startup from `/etc/default/quadrf-lora-phy` (`QUADRF_LORA_PHY_FREQ`, `_TX_GAIN`, `_RX_GAIN`, `_TX_BW`, `_RX_BW`, `_TX_ANT`, `_RX_ANT`). After that, mute/unmute only gates PA_BIAS / FPGA `disable_tx` and leaves those settings alone. The GUI LO control on `quadrf.local` overrides the packaged PHY center until PHY is restarted. The GUI TX/RX Ch: checkboxes and 4-channel (interleaved) RX mode likewise override `--tx-ant 1 --rx-ant 1` until PHY restart. Meshtastic `lora.override_frequency` stays `0` and does not tune the radio.
 
 ### Type 2: `RxIndicate`
 

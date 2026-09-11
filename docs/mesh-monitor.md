@@ -73,7 +73,7 @@ Due to full-duplex SDR transceiver operation, the QuadRF receiver detects its ow
 
 ## Configuration and Radio Ownership
 
-- **PHY Owns the Radio**: `quadrf-lora-phy` initializes the MAX2850 transceiver and FPGA at 5800 MHz (`QUADRF_LORA_PHY_FREQ`). Live LO tuning is performed through the QuadRF appliance GUI slider. Meshtastic `lora.override_frequency` must remain `0` (it does not tune the radio).
+- **PHY Owns the Radio**: `quadrf-lora-phy` initializes the MAX2850 transceiver and FPGA from `/etc/default/quadrf-lora-phy` (packaged: 5800 MHz, `--tx-ant 1 --rx-ant 1`). Edit that file and restart PHY to change startup RF. Live LO tuning is performed through the QuadRF appliance GUI slider. The GUI TX/RX Ch: checkboxes and 4-channel (interleaved) RX mode override the packaged antenna mask until PHY is restarted. Meshtastic `lora.override_frequency` must remain `0` (it does not tune the radio).
 - **Two Supported Modem Presets**:
   - `ShortTurbo` (`SHORT_TURBO`): 500 kHz bandwidth, SF7 (default).
   - `ShortFast` (`SHORT_FAST`): 250 kHz bandwidth, SF7.
