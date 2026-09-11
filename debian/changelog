@@ -1,3 +1,17 @@
+quadrf-mesh (0.1.5-1) experimental; urgency=medium
+
+  * debian: Document /etc/default/quadrf-lora-phy as operator RF config
+  * mesh: Drop FPGA interleave mode, it was dumb to have
+  * phy: Restore post-TX RX gain from live 0x6A snapshot
+  * phy: Default RX polarization to RHCP for co-polarized mesh hops
+  * phy: Add channel SNR, SIR, and LVL; propagate through Air-IPC and monitor
+  * phy: reduce RX gain during TX and drop PA drain to 0 ms
+  * mesh: Spawn monitor outside NoNewPrivileges sandbox
+  * mesh: Drop Open Web UI launch and fix RX mode parse
+  * debian: Name the applications launcher Mesh
+
+ -- Roy C. Gross <61633595+radioroy@users.noreply.github.com>  Thu, 10 Sep 2026 21:54:38 -0700
+
 quadrf-mesh (0.1.4-1) experimental; urgency=medium
 
   * mesh: Drive PHY modem from Meshtastic preset
