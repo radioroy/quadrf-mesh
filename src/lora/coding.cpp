@@ -1,6 +1,7 @@
 #include <phy/lora/coding.hpp>
 
 #include <algorithm>
+#include <cmath>
 #include <cstddef>
 
 namespace phy::lora {
@@ -266,6 +267,32 @@ std::vector<uint16_t> encodeFrame(const LoraParams& p, const std::vector<uint8_t
     return chips;
 }
 
+namespace {
+
+// Nibble stream (header + whitened payload + CRC) -> payload bytes, CRC check.
+void finishPayload(const std::vector<uint8_t>& nibbles, DecodeResult& result) {
+    const size_t len = result.header.payload_len;
+    result.payload.resize(len);
+    for (size_t i = 0; i < len; ++i) {
+        const uint8_t w =
+            static_cast<uint8_t>((nibbles[5 + 2 * i] & 0x0F) | (nibbles[5 + 2 * i + 1] << 4));
+        result.payload[i] = w ^ kWhiteningSeq[i % sizeof(kWhiteningSeq)];
+    }
+
+    if (result.header.has_crc) {
+        const size_t c = 5 + 2 * len;
+        result.crc_received = static_cast<uint16_t>(
+            (nibbles[c] & 0x0F) | (nibbles[c + 1] << 4) | (nibbles[c + 2] << 8) |
+            (nibbles[c + 3] << 12));
+        result.crc_expected = payloadCrc(result.payload.data(), result.payload.size());
+        result.crc_ok = (result.crc_received == result.crc_expected);
+    } else {
+        result.crc_ok = true;
+    }
+}
+
+}  // namespace
+
 DecodeResult decodeFrame(const LoraParams& p, const std::vector<uint16_t>& raw_values) {
     DecodeResult result;
     const uint8_t sf = p.spreading_factor;
@@ -315,30 +342,211 @@ DecodeResult decodeFrame(const LoraParams& p, const std::vector<uint16_t>& raw_v
         }
     }
 
-    if (!result.header.valid || nibbles.size() < nibbles_needed) {
-        result.symbols_consumed = sym_idx;
-        return result;
-    }
-
-    const size_t len = result.header.payload_len;
-    result.payload.resize(len);
-    for (size_t i = 0; i < len; ++i) {
-        const uint8_t w =
-            static_cast<uint8_t>((nibbles[5 + 2 * i] & 0x0F) | (nibbles[5 + 2 * i + 1] << 4));
-        result.payload[i] = w ^ kWhiteningSeq[i % sizeof(kWhiteningSeq)];
-    }
-
-    if (result.header.has_crc) {
-        const size_t c = 5 + 2 * len;
-        result.crc_received = static_cast<uint16_t>(
-            (nibbles[c] & 0x0F) | (nibbles[c + 1] << 4) | (nibbles[c + 2] << 8) |
-            (nibbles[c + 3] << 12));
-        result.crc_expected = payloadCrc(result.payload.data(), result.payload.size());
-        result.crc_ok = (result.crc_received == result.crc_expected);
-    } else {
-        result.crc_ok = true;
-    }
     result.symbols_consumed = sym_idx;
+    if (result.header.valid && nibbles.size() >= nibbles_needed) {
+        finishPayload(nibbles, result);
+    }
+    return result;
+}
+
+namespace {
+
+// ln I0(x), Abramowitz & Stegun 9.8.1 / 9.8.2 (rel. err < 2e-7).
+double logBesselI0(double x) {
+    const double ax = std::abs(x);
+    if (ax < 3.75) {
+        double t = x / 3.75;
+        t *= t;
+        return std::log(1.0 + t * (3.5156229 + t * (3.0899424 + t * (1.2067492 +
+                                   t * (0.2659732 + t * (0.0360768 + t * 0.0045813))))));
+    }
+    const double t = 3.75 / ax;
+    const double poly =
+        0.39894228 +
+        t * (0.01328592 +
+             t * (0.00225319 +
+                  t * (-0.00157565 +
+                       t * (0.00916281 +
+                            t * (-0.02057706 + t * (0.02635537 + t * (-0.01647633 + t * 0.00392377)))))));
+    return ax - 0.5 * std::log(ax) + std::log(poly);
+}
+
+}  // namespace
+
+void estimateSoftScale(const float* mags, size_t n_syms, uint32_t n_chips, double& tone_amp,
+                       double& noise_pow) {
+    double peak_acc = 0.0;
+    double noise_acc = 0.0;
+    for (size_t s = 0; s < n_syms; ++s) {
+        const float* row = mags + s * n_chips;
+        uint32_t pk = 0;
+        double pk_p = 0.0;
+        double tot = 0.0;
+        for (uint32_t k = 0; k < n_chips; ++k) {
+            const double p = static_cast<double>(row[k]) * row[k];
+            tot += p;
+            if (p > pk_p) {
+                pk_p = p;
+                pk = k;
+            }
+        }
+        double lobe = 0.0;
+        for (int d = -2; d <= 2; ++d) {
+            const double m = row[(pk + n_chips + static_cast<uint32_t>(d + 2) - 2u) % n_chips];
+            lobe += m * m;
+        }
+        peak_acc += pk_p;
+        noise_acc += (tot - lobe) / static_cast<double>(n_chips - 5);
+    }
+    if (n_syms == 0) {
+        tone_amp = 0.0;
+        noise_pow = 0.0;
+        return;
+    }
+    noise_pow = noise_acc / static_cast<double>(n_syms);
+    const double sig = peak_acc / static_cast<double>(n_syms) - noise_pow;
+    // Near threshold the mean peak is mostly noise maxima; keep the scale
+    // positive so the LLRs degrade toward hard decisions instead of vanishing.
+    tone_amp = std::sqrt(std::max(sig, 0.25 * noise_pow));
+}
+
+void symbolLlrs(const float* row, uint8_t sf, bool reduced, double tone_amp, double noise_pow,
+                int shift, double* llr_out) {
+    const uint32_t n = 1u << sf;
+    const uint8_t sf_app = reduced ? static_cast<uint8_t>(sf - 2) : sf;
+    const double k = (noise_pow > 0.0) ? 2.0 * tone_amp / noise_pow : 0.0;
+    const uint32_t sh = static_cast<uint32_t>(((shift % static_cast<int>(n)) + static_cast<int>(n)) %
+                                              static_cast<int>(n));
+
+    thread_local std::vector<double> metric;
+    metric.resize(n);
+    double mmax = -1e300;
+    for (uint32_t u = 0; u < n; ++u) {
+        const double m = logBesselI0(k * row[(u + n - sh) % n]);
+        metric[u] = m;
+        mmax = std::max(mmax, m);
+    }
+    double s1[16] = {};
+    double s0[16] = {};
+    for (uint32_t u = 0; u < n; ++u) {
+        const double e = std::exp(metric[u] - mmax);
+        uint32_t v = (u + n - 1) % n;
+        if (reduced) {
+            v >>= 2;
+        }
+        const uint32_t g = grayEncode(v);
+        for (int j = 0; j < sf_app; ++j) {
+            if ((g >> (sf_app - 1 - j)) & 0x1) {
+                s1[j] += e;
+            } else {
+                s0[j] += e;
+            }
+        }
+    }
+    constexpr double kTiny = 1e-300;
+    constexpr double kClamp = 60.0;
+    for (int j = 0; j < sf_app; ++j) {
+        const double l = std::log(s1[j] + kTiny) - std::log(s0[j] + kTiny);
+        llr_out[j] = std::clamp(l, -kClamp, kClamp);
+    }
+}
+
+uint8_t hammingDecodeSoft(const double* llr, uint8_t cr_app, double* margin) {
+    const uint8_t cw_len = static_cast<uint8_t>(cr_app + 4);
+    uint8_t best = 0;
+    double best_score = -1e300;
+    double second_score = -1e300;
+    for (uint8_t nib = 0; nib < 16; ++nib) {
+        const uint8_t cw = hammingEncode(nib, cr_app);
+        double score = 0.0;
+        for (int i = 0; i < cw_len; ++i) {
+            if ((cw >> (cw_len - 1 - i)) & 0x1) {
+                score += llr[i];
+            }
+        }
+        if (score > best_score) {
+            second_score = best_score;
+            best_score = score;
+            best = nib;
+        } else if (score > second_score) {
+            second_score = score;
+        }
+    }
+    if (margin) {
+        *margin = best_score - second_score;
+    }
+    return best;
+}
+
+DecodeResult decodeFrameSoft(const LoraParams& p, const SoftSymbols& soft, int shift) {
+    DecodeResult result;
+    const uint8_t sf = p.spreading_factor;
+    const uint32_t n_chips = chipCount(p);
+
+    std::vector<uint8_t> nibbles;
+    std::vector<double> margins;
+    size_t sym_idx = 0;
+    bool first_block = true;
+    size_t nibbles_needed = static_cast<size_t>(sf - 2);
+
+    while (nibbles.size() < nibbles_needed && sym_idx < soft.n_syms) {
+        const bool reduced = first_block || p.ldro;
+        const uint8_t cr_app = first_block ? 4 : result.header.cr;
+        const uint8_t cw_len = static_cast<uint8_t>(cr_app + 4);
+        const uint8_t sf_app = reduced ? sf - 2 : sf;
+        if (sym_idx + cw_len > soft.n_syms) {
+            break;
+        }
+
+        // cw_llr[c][i]: codeword c, bit i MSB first. Inverse of the diagonal
+        // map in deinterleaveBlock: symbol i bit j -> codeword (i - j - 1).
+        double cw_llr[16][8] = {};
+        for (int i = 0; i < cw_len; ++i) {
+            double llr[16];
+            symbolLlrs(soft.mags + (sym_idx + i) * n_chips, sf, reduced, soft.tone_amp,
+                       soft.noise_pow, shift, llr);
+            for (int j = 0; j < sf_app; ++j) {
+                const int dst = ((i - j - 1) % sf_app + sf_app) % sf_app;
+                cw_llr[dst][i] = llr[j];
+            }
+        }
+        sym_idx += cw_len;
+        for (int c = 0; c < sf_app; ++c) {
+            double m = 0.0;
+            nibbles.push_back(hammingDecodeSoft(cw_llr[c], cr_app, &m));
+            margins.push_back(m);
+        }
+
+        if (first_block) {
+            result.header = parseHeader(nibbles.data());
+            if (!result.header.valid) {
+                result.symbols_consumed = sym_idx;
+                return result;
+            }
+            nibbles_needed = 5 + 2 * static_cast<size_t>(result.header.payload_len) +
+                             (result.header.has_crc ? 4 : 0);
+            first_block = false;
+        }
+    }
+
+    result.symbols_consumed = sym_idx;
+    if (result.header.valid && nibbles.size() >= nibbles_needed) {
+        finishPayload(nibbles, result);
+        // Header is nibbles 0-4, payload byte k is nibbles 5+2k (lo) and
+        // 6+2k (hi), CRC bits 4m..4m+3 are nibble c+m. CRC = crc16(head) ^
+        // (byte[n-2] << 8 | byte[n-1]), so an undetected error needs the same
+        // flip in a tail nibble and its CRC partner; both must be uncertain.
+        const size_t len = result.header.payload_len;
+        if (result.header.has_crc && len >= 2) {
+            const size_t a = 5 + 2 * (len - 2);
+            const size_t c = 5 + 2 * len;
+            const size_t pairs[4][2] = {{a + 2, c}, {a + 3, c + 1}, {a, c + 2}, {a + 1, c + 3}};
+            for (const auto& pr : pairs) {
+                result.tail_margin =
+                    std::min(result.tail_margin, std::max(margins[pr[0]], margins[pr[1]]));
+            }
+        }
+    }
     return result;
 }
 

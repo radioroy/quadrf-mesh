@@ -68,9 +68,50 @@ struct DecodeResult {
     uint16_t crc_received = 0;
     std::vector<uint8_t> payload;
     size_t symbols_consumed = 0;
+    // Soft decode only. Per nibble, margin = ML log-likelihood of the best
+    // codeword minus the runner-up. The CRC only XORs the last two payload
+    // bytes in, so equal errors in a tail nibble and its CRC partner nibble
+    // pass; this is the min over the 4 pairs of max(margin, partner margin).
+    double tail_margin = 1e300;
 };
 
 // Full decode from raw demodulated chirp values (argmax bins, 0 .. 2^sf-1).
 DecodeResult decodeFrame(const LoraParams& p, const std::vector<uint16_t>& raw_values);
+
+// Soft-decision input: one row of 2^sf folded bin magnitudes (sqrt of bin
+// power) per data symbol, row-major, indexed by chip value exactly like
+// raw_values (raw_values[s] is the argmax of row s). `tone_amp` and
+// `noise_pow` are the per-frame tone amplitude and per-bin noise power in
+// the same units (tone_amp^2 ~ peak bin power above the floor).
+struct SoftSymbols {
+    const float* mags = nullptr;
+    size_t n_syms = 0;
+    double tone_amp = 0.0;
+    double noise_pow = 0.0;
+};
+
+// Per-frame tone amplitude / bin noise power from the stored rows: noise is
+// the mean off-lobe (peak +-2 excluded) power, amplitude from the mean peak
+// power above it.
+void estimateSoftScale(const float* mags, size_t n_syms, uint32_t n_chips, double& tone_amp,
+                       double& noise_pow);
+
+// Bit LLRs (log P(1)/P(0)) of one symbol's gray word, MSB first, sf_app
+// bits (sf - 2 for reduced-rate blocks). Non-coherent tone likelihood
+// ln I0(2 a m_v / sigma^2) per chip value, summed exactly (log-sum-exp) over
+// the values carrying each bit. `shift` reads value u from bin u - shift,
+// the soft analogue of adding `shift` to the hard value.
+void symbolLlrs(const float* row, uint8_t sf, bool reduced, double tone_amp, double noise_pow,
+                int shift, double* llr_out);
+
+// ML nibble over the 16 Hamming codewords given cw_len codeword-bit LLRs
+// (MSB first, same layout as hammingDecode's input). `margin`, if given,
+// receives best minus second-best codeword log-likelihood.
+uint8_t hammingDecodeSoft(const double* llr, uint8_t cr_app, double* margin = nullptr);
+
+// Soft counterpart of decodeFrame: same block structure, header handling and
+// CRC check, with LLR deinterleaving and ML Hamming decoding. Decodes as far
+// as the rows allow (8 rows are enough for the header).
+DecodeResult decodeFrameSoft(const LoraParams& p, const SoftSymbols& soft, int shift = 0);
 
 }  // namespace phy::lora

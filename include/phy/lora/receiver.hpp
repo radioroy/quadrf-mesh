@@ -27,6 +27,7 @@ struct ReceivedFrame {
     bool sync_ok = false;
     bool sfd_ok = false;
     bool synced = false;
+    bool soft_decoded = false;  // CRC passed on the soft path, not the hard one
     std::vector<uint16_t> raw_values;  // data chips after reference removal
     DecodeResult decode;
 };
@@ -65,6 +66,12 @@ public:
     bool pop(ReceivedFrame& out);
 
     size_t framesDetected() const { return frames_detected_; }
+    // Data symbols demodulated so far, and how many used the coherent fold.
+    size_t dataSymbols() const { return data_syms_total_; }
+    size_t coherentSymbols() const { return coherent_syms_; }
+    // Headers / frames the hard path lost and soft decisions recovered.
+    size_t softHeaders() const { return soft_headers_; }
+    size_t softFrames() const { return soft_frames_; }
     size_t samplesConsumed() const { return next_abs_; }
 
 private:
@@ -118,10 +125,18 @@ private:
         double ratio;
     };
     std::vector<AltSym> alt_syms_;
+    // Soft-decision rows, one per raw value: folded magnitudes in value order
+    // (row[v] belongs to value v), from whichever fold made the decision.
+    std::vector<float> soft_mags_;
     size_t data_sym_ = 0;
     size_t needed_syms_ = 8;
     bool have_len_ = false;
     double ref_ = 0.0;
+    // Coherent image fold (SymbolDemod::demodData): decision-directed estimate
+    // of the inter-segment rotation, sum of seg1 * conj(seg2) at decided peaks,
+    // and the matching sum of |seg1||seg2| (coherence = |acc| / mag).
+    std::complex<double> fold_acc_{0.0, 0.0};
+    double fold_mag_ = 0.0;
     double snr_acc_ = 0.0;
     double sir_min_ = 0.0;
     double pwr_acc_ = 0.0;
@@ -131,6 +146,15 @@ private:
 
     std::deque<ReceivedFrame> out_;
     size_t frames_detected_ = 0;
+    size_t data_syms_total_ = 0;
+    size_t coherent_syms_ = 0;
+    size_t soft_headers_ = 0;
+    size_t soft_frames_ = 0;
+
+    SoftSymbols softRows(size_t n_syms) const;
+    void enforceCrcFlag(DecodeResult& d) const;
+    DecodeResult decodeHard(const std::vector<uint16_t>& values) const;
+    DecodeResult decodeSoft(const SoftSymbols& soft, int shift = 0) const;
 };
 
 }  // namespace phy::lora

@@ -3,6 +3,8 @@
 #include <phy/dsp/resampler.hpp>
 
 #include <algorithm>
+#include <cstdlib>
+#include <cstdio>
 #include <cmath>
 #include <limits>
 #ifdef RX_TRACE
@@ -14,9 +16,12 @@ namespace phy::lora {
 namespace {
 
 // Coarse detection: peak/median power ratio in the dechirped FFT per symbol.
-// Idle-noise ratios sit at 4.5-8 (max of 128 exponential bins), so 12 (10.8 dB)
-// clears the floor while maintaining sensitivity for peer frames.
-constexpr double kSnrThresh = 12.0;
+// Idle-noise ratios sit at 4.5-8 (max of 128 exponential bins), so a single
+// window crosses 6 often; the run-of-6 requirement below is what rejects noise.
+// 30 s of pure noise at 1 Msps gave 0 false syncs at 6 (3 at 5). Against 12,
+// PER at -9 dB channel SNR drops from 0.65 to 0.17 because detection, not
+// decoding, was the limit.
+constexpr double kSnrThresh = 6.0;
 // Preamble up-chirps repeat the same chip, so consecutive coarse windows drift
 // sub-chip; random payload chips step uniformly over the full range. 8 chips
 // retains valid preambles while rejecting false runs on frame tails or uncorrelated noise.
@@ -32,7 +37,55 @@ std::vector<uint16_t> shiftValues(const std::vector<uint16_t>& v, int sh, uint32
     return out;
 }
 
+// Soft analogue of shiftValues on the first n_syms stored rows: value u now
+// reads what value u - sh held.
+void rotateSoftRows(std::vector<float>& mags, size_t n_syms, uint32_t n_chips, int sh) {
+    std::vector<float> row(n_chips);
+    const uint32_t s = static_cast<uint32_t>((sh % static_cast<int>(n_chips) + static_cast<int>(n_chips)) %
+                                             static_cast<int>(n_chips));
+    for (size_t r = 0; r < n_syms && (r + 1) * n_chips <= mags.size(); ++r) {
+        float* m = mags.data() + r * n_chips;
+        for (uint32_t u = 0; u < n_chips; ++u) {
+            row[u] = m[(u + n_chips - s) % n_chips];
+        }
+        std::copy(row.begin(), row.end(), m);
+    }
+}
+
 }  // namespace
+
+// The explicit header carries only a 5-bit checksum, so ~1 in 32 noise
+// headers parse as valid; one that also reads CRC-off would pass with no
+// payload check at all. When the link runs with CRC, such headers are noise.
+void Receiver::enforceCrcFlag(DecodeResult& d) const {
+    if (params_.has_crc && d.header.valid && !d.header.has_crc) {
+        d.header.valid = false;
+        d.crc_ok = false;
+    }
+}
+
+DecodeResult Receiver::decodeHard(const std::vector<uint16_t>& values) const {
+    DecodeResult d = decodeFrame(params_, values);
+    enforceCrcFlag(d);
+    return d;
+}
+
+DecodeResult Receiver::decodeSoft(const SoftSymbols& soft, int shift) const {
+    DecodeResult d = decodeFrameSoft(params_, soft, shift);
+    enforceCrcFlag(d);
+    if (d.crc_ok && d.tail_margin < params_.soft_tail_margin) {
+        d.crc_ok = false;
+    }
+    return d;
+}
+
+SoftSymbols Receiver::softRows(size_t n_syms) const {
+    SoftSymbols soft;
+    soft.mags = soft_mags_.data();
+    soft.n_syms = std::min(n_syms, soft_mags_.size() / n_chips_);
+    estimateSoftScale(soft.mags, soft.n_syms, n_chips_, soft.tone_amp, soft.noise_pow);
+    return soft;
+}
 
 Receiver::Receiver(const LoraParams& params) : params_(params), sym_(params) {
     sps_ = samplesPerSymbol(params_);
@@ -445,8 +498,11 @@ bool Receiver::stepSync() {
     timing_int_ = 0.0;
     sym_fracs_.clear();
     alt_syms_.clear();
+    soft_mags_.clear();
     needed_syms_ = 8;
     have_len_ = false;
+    fold_acc_ = {0.0, 0.0};
+    fold_mag_ = 0.0;
     snr_acc_ = 0.0;
     sir_min_ = std::numeric_limits<double>::infinity();
     pwr_acc_ = 0.0;
@@ -496,7 +552,21 @@ bool Receiver::stepData() {
         };
         derotate();
 
-        ChipPeak pk = sym_.demod(win_.data());
+        const auto ref_phys =
+            static_cast<int32_t>(std::lround(wrapSigned(ref_int, static_cast<double>(n_chips_))));
+        // Coherent fold once the rotation estimate is consistent; otherwise
+        // the power fold. Timing (frac, refine) always reads the power fold,
+        // so the loop behaves the same either way.
+        const double fold_abs = std::abs(fold_acc_);
+        const bool coherent =
+            params_.coherent_fold && fold_mag_ > 0.0 && fold_abs > 0.6 * fold_mag_;
+        const Sample rot = (fold_abs > 0.0)
+                               ? Sample(static_cast<float>(fold_acc_.real() / fold_abs),
+                                        static_cast<float>(fold_acc_.imag() / fold_abs))
+                               : Sample(1.0f, 0.0f);
+        ChipPeak pk_co;
+        ChipPeak pk;
+        sym_.demodData(win_.data(), ref_phys, rot, pk, pk_co);
         double rel = wrapSigned(pk.chip - ref_int, n_chips_);
         double rel_pos = (rel < 0.0) ? rel + n_chips_ : rel;
         double frac = chipFrac(rel_pos);
@@ -506,7 +576,10 @@ bool Receiver::stepData() {
         // centered on the corrected grid.
         {
             double start = start_rel;
-            if (refineSymbolWindow(pk, rel_pos, frac, start, ref_int, n_chips_, os_, total_ratio_,
+            bool tried = false;
+            const bool refine_ok = channelSnrDb(pk, n_chips_, params_.spreading_factor) >=
+                                   params_.refine_min_snr_db;
+            if (refine_ok && refineSymbolWindow(pk, rel_pos, frac, start, ref_int, n_chips_, os_, total_ratio_,
                                    [&](double shift, ChipPeak& out) {
                                        const double s2 = start_rel + shift;
                                        if (s2 < 1.0 ||
@@ -519,12 +592,45 @@ bool Receiver::stepData() {
                                        if (n2 < sps_) {
                                            return false;
                                        }
+                                       tried = true;
                                        derotate();
                                        out = sym_.demod(win_.data());
                                        return true;
                                    })) {
                 data_raw_f_ += start - start_rel;
+                // A shift of d raw samples moves the window d / ratio samples
+                // and turns the inter-segment phase by 2 pi d / (ratio * os);
+                // restart the estimate rather than track the jump.
+                fold_acc_ = {0.0, 0.0};
+                fold_mag_ = 0.0;
             }
+            if (tried) {
+                // win_ holds the last trial; redo the chosen window.
+                resampleCatmullRom(buf_.data(), buf_.size(), start, total_ratio_, win_.data(),
+                                   sps_);
+                derotate();
+                ChipPeak nc_unused;
+                sym_.demodData(win_.data(), ref_phys, rot, nc_unused, pk_co);
+            }
+        }
+
+        // Decision-directed rotation update at the decided peak, ~6-symbol
+        // memory so the timing loop's slow sub-sample walk is tracked.
+        {
+            const ChipPeak& d = coherent ? pk_co : pk;
+            const std::complex<double> s1(d.seg1);
+            const std::complex<double> s2(d.seg2);
+            fold_acc_ = 0.85 * fold_acc_ + s1 * std::conj(s2);
+            fold_mag_ = 0.85 * fold_mag_ + std::abs(s1) * std::abs(s2);
+        }
+        ++data_syms_total_;
+        coherent_syms_ += coherent;
+        if (coherent) {
+            // Value and metrics from the coherent fold. `frac` (timing loop)
+            // stays on the power fold.
+            const double rel_co = wrapSigned(pk_co.chip - ref_int, n_chips_);
+            pk = pk_co;
+            rel_pos = (rel_co < 0.0) ? rel_co + n_chips_ : rel_co;
         }
 
         sym_fracs_.push_back(chipFrac(rel_pos));
@@ -544,6 +650,19 @@ bool Receiver::stepData() {
             }
         }
         cur_.raw_values.push_back(value);
+        {
+            // Value v sits at chip bin v + ref (mod N), the same map the hard
+            // value went through.
+            const std::vector<double>& f = coherent ? sym_.foldedCoherent() : sym_.foldedPower();
+            const size_t base = soft_mags_.size();
+            soft_mags_.resize(base + n_chips_);
+            const int32_t n = static_cast<int32_t>(n_chips_);
+            for (int32_t v = 0; v < n; ++v) {
+                const int32_t j = ((v + ref_phys) % n + n) % n;
+                soft_mags_[base + static_cast<size_t>(v)] =
+                    static_cast<float>(std::sqrt(f[static_cast<size_t>(j)]));
+            }
+        }
         if (pk.total_power > 0.0) {
             snr_acc_ += channelSnrDb(pk, n_chips_, params_.spreading_factor);
             const double sir = sirDb(pk);
@@ -559,8 +678,9 @@ bool Receiver::stepData() {
         // the same-symbol refine, I learns the preamble rate residual
         // (~+/-15 ppm). A late window reads high, so positive frac steers
         // the next start earlier.
-        timing_int_ += 0.15 * frac;
-        const double adj = -chipsToRawSamples(0.7 * frac + timing_int_, os_, total_ratio_);
+        timing_int_ += params_.timing_ki * frac;
+        const double adj =
+            -chipsToRawSamples(params_.timing_kp * frac + timing_int_, os_, total_ratio_);
 #ifdef RX_TRACE
         std::fprintf(stderr, "  sym %2zu rel=%9.3f frac=%+6.3f int=%+6.3f\n", data_sym_, rel_pos,
                      frac, timing_int_);
@@ -574,16 +694,24 @@ bool Receiver::stepData() {
         }
 
         if (!have_len_ && cur_.raw_values.size() >= 8) {
-            DecodeResult head = decodeFrame(params_, cur_.raw_values);
+            DecodeResult head = decodeHard(cur_.raw_values);
+            if (!head.header.valid && params_.soft_decoding) {
+                DecodeResult hs = decodeSoft(softRows(8));
+                if (hs.header.valid) {
+                    head = std::move(hs);
+                    ++soft_headers_;
+                }
+            }
             if (!head.header.valid) {
                 // A stream step between the sync calibration and the data
                 // start (nothing observes that span) offsets the whole grid
                 // by a chip; the header checksum resolves the hypothesis.
                 for (const int sh : {+1, -1}) {
                     const auto shifted = shiftValues(cur_.raw_values, sh, n_chips_);
-                    DecodeResult h2 = decodeFrame(params_, shifted);
+                    DecodeResult h2 = decodeHard(shifted);
                     if (h2.header.valid) {
                         cur_.raw_values = shifted;
+                        rotateSoftRows(soft_mags_, cur_.raw_values.size(), n_chips_, sh);
                         ref_ -= sh;  // future symbols read consistently
                         head = std::move(h2);
                         break;
@@ -598,7 +726,7 @@ bool Receiver::stepData() {
                     }
                     auto cand = cur_.raw_values;
                     cand[a.idx] = a.value;
-                    DecodeResult h2 = decodeFrame(params_, cand);
+                    DecodeResult h2 = decodeHard(cand);
                     if (h2.header.valid) {
                         cur_.raw_values = std::move(cand);
                         head = std::move(h2);
@@ -622,7 +750,7 @@ bool Receiver::stepData() {
 }
 
 void Receiver::finalizeData() {
-    cur_.decode = decodeFrame(params_, cur_.raw_values);
+    cur_.decode = decodeHard(cur_.raw_values);
     // Chip-lattice offsets can slip past the header (the reduced-rate
     // header drops the two LSBs, so +/-1 chip usually leaves it valid);
     // the payload CRC is the checksum that actually resolves them. Try the
@@ -632,9 +760,19 @@ void Receiver::finalizeData() {
     if (cur_.decode.header.valid && cur_.decode.header.has_crc && cur_.decode.crc_ok) {
         cur_.synced = true;
     }
+    if (params_.soft_decoding && cur_.decode.header.valid && cur_.decode.header.has_crc &&
+        !cur_.decode.crc_ok) {
+        DecodeResult ds = decodeSoft(softRows(cur_.raw_values.size()));
+        if (ds.header.valid && ds.crc_ok) {
+            cur_.decode = std::move(ds);
+            cur_.synced = true;
+            cur_.soft_decoded = true;
+            ++soft_frames_;
+        }
+    }
     if (cur_.decode.header.valid && cur_.decode.header.has_crc && !cur_.decode.crc_ok) {
         auto tryDecode = [&](std::vector<uint16_t>&& cand) {
-            DecodeResult d2 = decodeFrame(params_, cand);
+            DecodeResult d2 = decodeHard(cand);
             if (d2.header.valid && d2.crc_ok) {
                 cur_.raw_values = std::move(cand);
                 cur_.decode = std::move(d2);
@@ -729,6 +867,34 @@ void Receiver::finalizeData() {
                     fixed = tryDecode(std::move(two));
                 }
             }
+        }
+    }
+    if (params_.soft_decoding && cur_.decode.header.valid && cur_.decode.header.has_crc &&
+        !cur_.decode.crc_ok) {
+        const SoftSymbols soft = softRows(cur_.raw_values.size());
+        for (const int sh : {-1, +1}) {
+            DecodeResult ds = decodeSoft(soft, sh);
+            if (ds.header.valid && ds.crc_ok) {
+                cur_.decode = std::move(ds);
+                cur_.synced = true;
+                cur_.soft_decoded = true;
+                ++soft_frames_;
+                break;
+            }
+        }
+    }
+    // The payload CRC only XORs the last two bytes into the check, so one
+    // wrong symbol in the tail block can flip matching bits in a payload byte
+    // and the CRC nibbles and still pass (~1% of near-threshold hard passes).
+    // Below the gate a hard-path pass must decode to the same payload on the
+    // soft path too; two different CRC-passing payloads means one is wrong.
+    if (params_.soft_decoding && !cur_.soft_decoded && cur_.decode.header.valid &&
+        cur_.decode.crc_ok && metric_n_ > 0 &&
+        snr_acc_ / static_cast<double>(metric_n_) < params_.soft_verify_below_snr_db) {
+        const DecodeResult dc = decodeSoft(softRows(cur_.raw_values.size()));
+        if (!(dc.header.valid && dc.crc_ok && dc.payload == cur_.decode.payload)) {
+            cur_.decode.crc_ok = false;
+            cur_.synced = false;
         }
     }
     if (metric_n_ > 0) {

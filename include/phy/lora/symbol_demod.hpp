@@ -48,6 +48,10 @@ struct ChipPeak {
     double mag2 = 0.0;  // |second peak|^2
     double lobe_power = 0.0;   // sum of peak +-2 chip bins
     double total_power = 0.0;  // sum of all folded bins
+    // demodData only: FFT coefficients of the two chirp segments at the peak
+    // (before / after the +BW/2 -> -BW/2 wrap), for the fold phase estimate.
+    Sample seg1{0.0f, 0.0f};
+    Sample seg2{0.0f, 0.0f};
 };
 
 // Channel SNR: main-lobe mean vs off-lobe mean, minus 10*log10(2^SF).
@@ -164,7 +168,25 @@ public:
 
     ChipPeak demod(const Sample* window, bool downchirp_ref = false);
 
+    // Data symbols, both folds from one FFT.
+    //   nc: power fold over all os images (same as demod()).
+    //   co: coherent fold of the two images that carry the symbol. A data
+    //       chirp wraps mid-symbol, so its dechirped tone is split between
+    //       bin b1 (first segment) and b1 - N (second). Power-summing them
+    //       loses 10log10(a^2 + (1-a)^2) (up to 3 dB at a = 1/2) and leaves
+    //       each truncated segment's sinc leakage in the noise estimate;
+    //       X[b1] + rot * X[b1 - N] restores one full-length tone. The
+    //       inter-segment phase is pi * tau (os = 2) for a sub-sample timing
+    //       offset tau, so the caller tracks rot per frame.
+    // ref_phys: frame chip offset (CFO + timing) as a signed chip count; it
+    // decides which image holds the first segment for each folded bin.
+    void demodData(const Sample* window, int32_t ref_phys, Sample rot, ChipPeak& nc,
+                   ChipPeak& co);
+
     uint32_t sps() const { return sps_; }
+    // Folded bin powers from the last demod/demodData, chip-bin indexed.
+    const std::vector<double>& foldedPower() const { return folded_; }
+    const std::vector<double>& foldedCoherent() const { return folded_co_; }
     uint32_t chipsPerSymbol() const { return n_chips_; }
     uint32_t oversampling() const { return sps_ / n_chips_; }
 
@@ -176,6 +198,9 @@ private:
     std::unique_ptr<FftEngine> fft_;
     std::vector<Sample> work_;
     std::vector<double> folded_;
+    std::vector<double> folded_co_;
+
+    ChipPeak peakOf(const std::vector<double>& folded) const;
 };
 
 // Chip drift per symbol across a preamble, measured on a symbol grid at

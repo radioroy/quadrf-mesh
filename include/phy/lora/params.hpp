@@ -20,6 +20,29 @@ struct LoraParams {
     // live hardware TCXOs stay within ~+/-20 ppm, so noise-driven slope fits
     // beyond the bound get clamped instead of warping the payload resample.
     double max_rate_ppm = 0.0;
+    // Data symbols: coherent two-image fold (SymbolDemod::demodData) once the
+    // per-frame rotation estimate locks. false = power fold over all images.
+    bool coherent_fold = true;
+    // Data-symbol PI timing loop gains on the fractional chip error. AWGN
+    // sweeps put 10% PER at -7.6 dB (S/(N0*BW), SF7) with 0.2/0.03 vs
+    // -5.9 dB with 0.7/0.15: near threshold a wrong peak yields a uniform
+    // frac and high gains walk the grid off the next symbols.
+    double timing_kp = 0.2;
+    double timing_ki = 0.03;
+    // Same-symbol +/-1 sample refine (DSI slip recovery) only above this
+    // per-symbol channelSnrDb. Below it, noise alone passes the louder/tighter
+    // test and each accepted trial permanently shifts the grid. On the OTA
+    // captures any gate >= 3 dB matched never refining, at all noise levels.
+    double refine_min_snr_db = 6.0;
+    // Soft-decision header/payload decode (LLR deinterleave + ML Hamming)
+    // when the hard path fails its checksum / CRC.
+    bool soft_decoding = true;
+    // Frame SNR (dB) below which a hard-decision CRC pass is only accepted if
+    // the soft decode also passes; it catches tail-block CRC false accepts.
+    double soft_verify_below_snr_db = 0.0;
+    // Soft CRC passes need DecodeResult::tail_margin >= this (nats). At 2.0
+    // ~0.6% of correct soft decodes near the cliff are dropped.
+    double soft_tail_margin = 2.0;
 };
 
 inline uint32_t chipCount(const LoraParams& p) {

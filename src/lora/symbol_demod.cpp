@@ -39,14 +39,55 @@ ChipPeak SymbolDemod::demod(const Sample* window, bool downchirp_ref) {
         }
         folded_[k] = p;
     }
+    return peakOf(folded_);
+}
 
+void SymbolDemod::demodData(const Sample* window, int32_t ref_phys, Sample rot, ChipPeak& nc,
+                            ChipPeak& co) {
+    dechirp(window, down_.data(), work_.data(), sps_);
+    fft_->forward(work_.data());
+    const IQBuffer& spec = fft_->spectrum();
+
+    const uint32_t os = sps_ / n_chips_;
+    const int32_t n = static_cast<int32_t>(n_chips_);
+    const int32_t sps = static_cast<int32_t>(sps_);
+    folded_co_.resize(n_chips_);
+    // Folded bin j holds symbol value v = j - ref (mod N); its first segment
+    // sits at unfolded bin v + ref_phys (mod sps), the second one N lower.
+    std::vector<uint32_t> b1_of(n_chips_);
+    for (int32_t j = 0; j < n; ++j) {
+        double p = 0.0;
+        for (uint32_t im = 0; im < os; ++im) {
+            p += std::norm(spec[static_cast<size_t>(j) + im * n_chips_]);
+        }
+        folded_[static_cast<size_t>(j)] = p;
+
+        const int32_t v = ((j - ref_phys) % n + n) % n;
+        const int32_t b1 = ((v + ref_phys) % sps + sps) % sps;
+        const int32_t b2 = (b1 - n + sps) % sps;
+        b1_of[static_cast<size_t>(j)] = static_cast<uint32_t>(b1);
+        const std::complex<double> y = std::complex<double>(spec[static_cast<size_t>(b1)]) +
+                                       std::complex<double>(rot) *
+                                           std::complex<double>(spec[static_cast<size_t>(b2)]);
+        folded_co_[static_cast<size_t>(j)] = std::norm(y);
+    }
+    nc = peakOf(folded_);
+    co = peakOf(folded_co_);
+    for (ChipPeak* pk : {&nc, &co}) {
+        const uint32_t b1 = b1_of[pk->chip_int];
+        pk->seg1 = spec[b1];
+        pk->seg2 = spec[(b1 + sps_ - n_chips_) % sps_];
+    }
+}
+
+ChipPeak SymbolDemod::peakOf(const std::vector<double>& folded) const {
     uint32_t peak = 0;
     double peak_p = 0.0;
     double tot = 0.0;
     for (uint32_t k = 0; k < n_chips_; ++k) {
-        tot += folded_[k];
-        if (folded_[k] > peak_p) {
-            peak_p = folded_[k];
+        tot += folded[k];
+        if (folded[k] > peak_p) {
+            peak_p = folded[k];
             peak = k;
         }
     }
@@ -54,7 +95,7 @@ ChipPeak SymbolDemod::demod(const Sample* window, bool downchirp_ref) {
     double lobe = 0.0;
     for (int d = -2; d <= 2; ++d) {
         const uint32_t k = (peak + n_chips_ - 2u + static_cast<uint32_t>(d + 2)) % n_chips_;
-        lobe += folded_[k];
+        lobe += folded[k];
     }
 
     // second peak, excluding the main lobe (+-2 chips circular)
@@ -65,21 +106,21 @@ ChipPeak SymbolDemod::demod(const Sample* window, bool downchirp_ref) {
         if (std::min(d, n_chips_ - d) <= 2) {
             continue;
         }
-        if (folded_[k] > peak2_p) {
-            peak2_p = folded_[k];
+        if (folded[k] > peak2_p) {
+            peak2_p = folded[k];
             peak2 = k;
         }
     }
 
     // parabolic sub-chip refinement
-    const double a = folded_[(peak + n_chips_ - 1) % n_chips_];
-    const double b = folded_[peak];
-    const double c = folded_[(peak + 1) % n_chips_];
+    const double a = folded[(peak + n_chips_ - 1) % n_chips_];
+    const double b = folded[peak];
+    const double c = folded[(peak + 1) % n_chips_];
     const double denom = a - 2.0 * b + c;
     const double delta = (std::abs(denom) > 1e-20) ? 0.5 * (a - c) / denom : 0.0;
 
     // rough noise floor: median of folded powers
-    std::vector<double> tmp = folded_;
+    std::vector<double> tmp = folded;
     std::nth_element(tmp.begin(), tmp.begin() + tmp.size() / 2, tmp.end());
 
     ChipPeak result;

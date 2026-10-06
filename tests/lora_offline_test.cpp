@@ -17,7 +17,9 @@
 #include <phy/lora/transmitter.hpp>
 #include <phy/mesh/packet.hpp>
 
+#include <algorithm>
 #include <chrono>
+#include <complex>
 #include <cmath>
 #include <cstdio>
 #include <cstring>
@@ -185,6 +187,85 @@ int main() {
         chips[15] = static_cast<uint16_t>((chips[15] + chipCount(p) - 1) % chipCount(p));
         const DecodeResult d = decodeFrame(p, chips);
         check(d.header.valid && d.crc_ok && d.payload == payload, "2 corrupted chips, cr=3");
+    }
+
+    std::printf("== 1c. soft decisions ==\n");
+    {
+        // Rows of |a*delta(v - chip) + n|, n ~ CN(0, sigma2): the folded
+        // magnitudes a non-coherent FFT demod would hand the soft decoder.
+        auto makeRows = [](const LoraParams& lp, const std::vector<uint16_t>& vals, double a,
+                           double sigma2, std::mt19937& rng) {
+            const uint32_t n = chipCount(lp);
+            std::normal_distribution<double> g(0.0, std::sqrt(sigma2 / 2.0));
+            std::vector<float> rows(vals.size() * n);
+            for (size_t s = 0; s < vals.size(); ++s) {
+                for (uint32_t v = 0; v < n; ++v) {
+                    std::complex<double> z(g(rng), g(rng));
+                    if (v == vals[s]) {
+                        z += a;
+                    }
+                    rows[s * n + v] = static_cast<float>(std::abs(z));
+                }
+            }
+            return rows;
+        };
+        auto argmaxValues = [](const std::vector<float>& rows, uint32_t n) {
+            std::vector<uint16_t> out(rows.size() / n);
+            for (size_t s = 0; s < out.size(); ++s) {
+                const float* r = rows.data() + s * n;
+                out[s] = static_cast<uint16_t>(std::max_element(r, r + n) - r);
+            }
+            return out;
+        };
+
+        std::mt19937 rng(91);
+        for (const uint8_t sf : {7, 9, 12}) {
+            for (uint8_t cr = 1; cr <= 4; ++cr) {
+                for (const bool ldro : {false, true}) {
+                    LoraParams lp;
+                    lp.spreading_factor = sf;
+                    lp.cr = cr;
+                    lp.ldro = ldro;
+                    const auto pay = testPayload(23);
+                    const auto vals = encodeFrame(lp, pay);
+                    const auto rows = makeRows(lp, vals, 1.0, 1e-4, rng);
+                    SoftSymbols soft{rows.data(), vals.size(), 0.0, 0.0};
+                    estimateSoftScale(rows.data(), vals.size(), chipCount(lp), soft.tone_amp,
+                                      soft.noise_pow);
+                    const DecodeResult d = decodeFrameSoft(lp, soft);
+                    char buf[64];
+                    std::snprintf(buf, sizeof(buf), "soft clean sf=%u cr=%u ldro=%d", sf, cr, ldro);
+                    check(d.header.valid && d.crc_ok && d.payload == pay, buf);
+                }
+            }
+        }
+
+        // SF7, 32 B: at a bin SNR where hard decisions lose most frames, ML
+        // Hamming over LLRs has to recover a clear majority of them.
+        for (uint8_t cr = 1; cr <= 4; ++cr) {
+            LoraParams lp;
+            lp.spreading_factor = 7;
+            lp.cr = cr;
+            const uint32_t n = chipCount(lp);
+            const auto pay = testPayload(32);
+            const auto vals = encodeFrame(lp, pay);
+            const double snr_bin_db = 10.5;
+            int hard_ok = 0, soft_ok = 0;
+            constexpr int kTrials = 400;
+            for (int t = 0; t < kTrials; ++t) {
+                const auto rows = makeRows(lp, vals, 1.0, std::pow(10.0, -snr_bin_db / 10.0), rng);
+                const DecodeResult dh = decodeFrame(lp, argmaxValues(rows, n));
+                hard_ok += (dh.crc_ok && dh.payload == pay) ? 1 : 0;
+                SoftSymbols soft{rows.data(), vals.size(), 0.0, 0.0};
+                estimateSoftScale(rows.data(), vals.size(), n, soft.tone_amp, soft.noise_pow);
+                const DecodeResult ds = decodeFrameSoft(lp, soft);
+                soft_ok += (ds.crc_ok && ds.payload == pay) ? 1 : 0;
+            }
+            char buf[96];
+            std::snprintf(buf, sizeof(buf), "SF7 cr=%u bin SNR %.1f dB: hard %d/%d, soft %d/%d", cr,
+                          snr_bin_db, hard_ok, kTrials, soft_ok, kTrials);
+            check(soft_ok > hard_ok + kTrials / 10, buf);
+        }
     }
 
     LoraParams p;  // defaults: SF11, BW 500k, 1 MSps, cr=1, crc
@@ -771,6 +852,56 @@ int main() {
                 std::snprintf(buf, sizeof(buf), "%s CFO +12700 Hz 15 dB", key);
                 check(rxMatches(frames, air), buf);
             }
+        }
+    }
+
+    // Full streaming chain near the SF7 cliff, soft vs hard on identical
+    // captures. addNoise() sets SNR over the sample rate; channel SNR in the
+    // 500 kHz signal band is 10*log10(fs/bw) higher. The noise is not band
+    // limited, so the cliff sits ~3 dB above the DDC-filtered live path.
+    // Wrong payloads that pass CRC are counted separately: over 12k frames at
+    // -8..-6.5 dB the hard-only receiver accepted ~0.4% of sends wrong (mostly
+    // in the two CRC-XOR tail bytes) and the default receiver ~1e-4.
+    std::printf("== 19. ShortTurbo soft vs hard near sensitivity ==\n");
+    {
+        const LoraParams st = meshtasticParams(MeshtasticPreset::kShortTurbo);
+        LoraParams st_hard = st;
+        st_hard.soft_decoding = false;
+        const auto air = testPayload(32);
+        const Modulator st_mod(st);
+        const IQBuffer st_frame = st_mod.frame(encodeFrame(st, air));
+        const size_t st_sps = st_mod.samplesPerSymbol();
+        const double band_gain_db = 10.0 * std::log10(st.sample_rate_hz / st.bandwidth_hz);
+        constexpr size_t kTrials = 400;
+        for (const double chan_snr_db : {-7.0, -6.0}) {
+            size_t hard_ok = 0, soft_ok = 0, soft_hits = 0, wrong = 0, hard_wrong = 0;
+            for (size_t t = 0; t < kTrials; ++t) {
+                const IQBuffer capture = addNoise(
+                    applyCfo(pad(st_frame, 2 * st_sps + 97 * (t % 13), 3 * st_sps), 4300.0,
+                             st.sample_rate_hz),
+                    chan_snr_db - band_gain_db,
+                    static_cast<uint32_t>(5000 + t * 31 + static_cast<int>(-chan_snr_db * 10)));
+                for (const bool soft : {false, true}) {
+                    Receiver rx(soft ? st : st_hard);
+                    const auto frames = runReceiver(rx, capture, static_cast<uint32_t>(600 + t));
+                    for (const auto& f : frames) {
+                        if (!(f.synced && f.decode.header.valid && f.decode.crc_ok)) {
+                            continue;
+                        }
+                        if (f.decode.payload != air) {
+                            ++(soft ? wrong : hard_wrong);
+                            continue;
+                        }
+                        ++(soft ? soft_ok : hard_ok);
+                        soft_hits += f.soft_decoded ? 1 : 0;
+                    }
+                }
+            }
+            char buf[160];
+            std::snprintf(buf, sizeof(buf),
+                          "channel SNR %.0f dB: hard %zu/%zu (%zu wrong), soft %zu/%zu (%zu via soft, %zu wrong)",
+                          chan_snr_db, hard_ok, kTrials, hard_wrong, soft_ok, kTrials, soft_hits, wrong);
+            check(wrong <= 1 && soft_ok > hard_ok + kTrials / 40 && soft_hits > 0, buf);
         }
     }
 
