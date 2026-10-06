@@ -38,7 +38,7 @@ Sent from the mesh daemon to `quadrf-lora-phy` to transmit a frame.
 
 `quadrf-lora-phy` does not retune from this field. Modulation uses whichever center the local LO is already on.
 
-PHY programs TX/RX frequency, gain, bandwidth, and antenna mask once at startup from `/etc/default/quadrf-lora-phy` (`QUADRF_LORA_PHY_FREQ`, `_TX_GAIN`, `_RX_GAIN`, `_TX_BW`, `_RX_BW`, `_TX_ANT`, `_RX_ANT`). After that, mute/unmute only gates PA_BIAS / FPGA `disable_tx` and leaves those settings alone. The GUI LO control on `quadrf.local` overrides the packaged PHY center until PHY is restarted. The GUI TX/RX Ch: checkboxes and 4-channel (interleaved) RX mode likewise override `--tx-ant 1 --rx-ant 1` until PHY restart. Meshtastic `lora.override_frequency` stays `0` and does not tune the radio.
+PHY programs TX/RX frequency, gain, bandwidth, and antenna mask once at startup from `/etc/default/quadrf-lora-phy` (`QUADRF_LORA_PHY_FREQ`, `_TX_GAIN`, `_RX_GAIN`, `_TX_BW`, `_RX_BW`, `_TX_ANT`, `_RX_ANT`). After that, mute/unmute only gates PA_BIAS / FPGA `disable_tx` and leaves those settings alone. The GUI Tx/Rx frequency sliders move the channel live: PHY polls both synths while idle and re-places them (TX = channel, RX = channel − IF). The GUI TX/RX Ch: checkboxes and 4-channel (interleaved) RX mode likewise override `--tx-ant 1 --rx-ant 1` until PHY restart. Meshtastic `lora.override_frequency` stays `0` and does not tune the radio.
 
 ### Type 2: `RxIndicate`
 
@@ -50,7 +50,7 @@ Sent from `quadrf-lora-phy` to the mesh daemon when a frame is received.
 | 2 | 2 | RSSI | int16, signed RSSI in dBm |
 | 4 | 4 | CFO | int32, signed carrier frequency offset in Hz |
 | 8 | 4 | Rate PPM | int32, signed sample-rate offset in hundredths of a ppm (e.g. `150` = +1.50 ppm) |
-| 12 | 8 | Center frequency | uint64, PHY configured center in Hz (startup `--freq`, not a live GUI LO readout) |
+| 12 | 8 | Center frequency | uint64, PHY channel in Hz (startup `--freq`, then the last GUI retune PHY followed) |
 | 20 | 2 | SIR | int16, worst-symbol second-tone ratio in hundredths of a dB |
 | 22 | 2 | LVL | int16, uncalibrated signal level in hundredths of a dBFS |
 | 24 | 16..255 | Payload | Meshtastic air-frame bytes |

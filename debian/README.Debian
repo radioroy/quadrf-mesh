@@ -32,8 +32,15 @@ Radio configuration
 Keys (packaged values): `QUADRF_LORA_PHY_FREQ` (5800), `QUADRF_LORA_PHY_PRESET`
 (shortturbo), `QUADRF_LORA_PHY_TX_GAIN` (25), `QUADRF_LORA_PHY_RX_GAIN` (45),
 `QUADRF_LORA_PHY_TX_ANT` / `QUADRF_LORA_PHY_RX_ANT` (bitmask, 1 = antenna 1),
-`QUADRF_LORA_PHY_TX_BW` (20) / `QUADRF_LORA_PHY_RX_BW` (4). The appliance GUI
-can retune LO, gain, and Ch: masks until PHY restarts.
+`QUADRF_LORA_PHY_TX_BW` (20) / `QUADRF_LORA_PHY_RX_BW` (4),
+`QUADRF_LORA_PHY_RX_RATE` (8e6) / `QUADRF_LORA_PHY_RX_IF_KHZ` (500).
+
+RX runs low-IF: the RX LO sits 500 kHz below the channel and PHY mixes it back
+digitally. The appliance GUI Tx or Rx frequency slider sets the channel live;
+PHY notices within a second, puts TX on the slider frequency and RX 500 kHz
+below it (and restores the RX mode / antenna mask if the retune changed them).
+The GUI therefore shows RX LO = channel - 0.5 MHz. `QUADRF_LORA_PHY_LO_FOLLOW=0`
+disables this. GUI gain and Ch: masks still override until PHY restarts.
 
 Meshtastic `lora.override_frequency` is kept at 0 and does not tune the
 radio. `lora.modem_preset` is sent to PHY (Short Turbo or Short Fast):

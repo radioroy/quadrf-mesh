@@ -109,6 +109,14 @@ phy_add_app(digital_loopback_test)
 phy_add_app(digital_loopback_probe)
 target_sources(digital_loopback_probe PRIVATE src/util/debug_dumper.cpp)
 
+phy_add_app(iq_capture)
+phy_add_app(lora_beacon)
+target_link_libraries(lora_beacon PRIVATE phy_lora)
+
+add_executable(lora_file_decode apps/lora_file_decode.cpp)
+target_link_libraries(lora_file_decode PRIVATE phy_lora)
+set_target_properties(lora_file_decode PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/apps")
+
 phy_add_app(lora_loopback)
 target_link_libraries(lora_loopback PRIVATE phy_lora)
 target_sources(lora_loopback PRIVATE src/util/debug_dumper.cpp)

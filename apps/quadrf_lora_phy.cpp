@@ -11,6 +11,7 @@
 // Logging → stderr. Socket path / PTY= printed on stdout for scripts.
 
 #include <phy/bridge/session.hpp>
+#include <phy/dsp/ddc.hpp>
 #include <quadrf/air_ipc.hpp>
 #include <phy/lora/presets.hpp>
 #include <phy/lora/receiver.hpp>
@@ -19,6 +20,7 @@
 #include <phy/radio/radio_session.hpp>
 #include <phy/radio/rf_frontend.hpp>
 #include <phy/radio/stream_pair.hpp>
+#include <phy/radio/synth.hpp>
 #include <phy/stream/framer.hpp>
 
 #include <SoapySDR/Constants.h>
@@ -32,6 +34,7 @@
 #include <termios.h>
 #include <unistd.h>
 
+#include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <cmath>
@@ -45,6 +48,7 @@
 #include <memory>
 #include <mutex>
 #include <new>
+#include <optional>
 #include <string>
 #include <thread>
 #include <utility>
@@ -83,6 +87,12 @@ void usage(const char* prog) {
         << "  --preset <name>        Meshtastic preset: shortturbo (default), shortfast\n"
         << "  --rx-only              OTA receive only (tx off; for uni peer RX)\n"
         << "  --pa-drain-ms <ms>     Extra idle after post-idle TX write (default: 0; env QUADRF_LORA_PHY_PA_DRAIN_MS)\n"
+        << "  --rx-rate <hz>         Host RX rate, even multiple of the modem rate (OTA default: 8e6;\n"
+        << "                         env QUADRF_LORA_PHY_RX_RATE)\n"
+        << "  --rx-if-khz <k>        RX LO = freq - k; DDC mixes the channel back to 0 Hz (OTA default:\n"
+        << "                         500; 0 = zero-IF; env QUADRF_LORA_PHY_RX_IF_KHZ)\n"
+        << "  --no-lo-follow         Do not track GUI / quadrf-jtag LO changes (env\n"
+        << "                         QUADRF_LORA_PHY_LO_FOLLOW=0)\n"
         << "  --selftest             Air-frame digital/OTA loopback, no IPC client\n"
         << "  --legacy-pty           Also speak StreamAPI on a PTY (bring-up only)\n"
         << "  --node <hex>           Node num for --legacy-pty (default: e58f0001)\n"
@@ -116,12 +126,14 @@ struct ChunkQueue {
     std::condition_variable cv;
     std::deque<std::vector<Sample>> q;
     static constexpr size_t kMaxChunks = 32;
+    std::atomic<size_t> dropped{0};
 
     void push(std::vector<Sample>&& c) {
         {
             std::lock_guard<std::mutex> lk(m);
             if (q.size() >= kMaxChunks) {
                 q.pop_front();
+                ++dropped;
             }
             q.push_back(std::move(c));
         }
@@ -313,6 +325,9 @@ int main(int argc, char** argv) {
     int warmup_syms = -1;
     int gap_syms = 64;
     int pa_drain_ms = -1;
+    double rx_rate_hz = -1.0;
+    double rx_if_khz = -1e9;
+    bool lo_follow = true;
     std::string preset_name = "shortturbo";
     std::string socket_path = "/run/quadrf/phy.sock";
     std::string telemetry_socket_path = "/run/quadrf/phy_telemetry.sock";
@@ -356,6 +371,12 @@ int main(int argc, char** argv) {
             gap_syms = std::stoi(argv[++i]);
         } else if (arg == "--pa-drain-ms" && i + 1 < argc) {
             pa_drain_ms = std::stoi(argv[++i]);
+        } else if (arg == "--rx-rate" && i + 1 < argc) {
+            rx_rate_hz = std::stod(argv[++i]);
+        } else if (arg == "--rx-if-khz" && i + 1 < argc) {
+            rx_if_khz = std::stod(argv[++i]);
+        } else if (arg == "--no-lo-follow") {
+            lo_follow = false;
         } else if (arg == "--preset" && i + 1 < argc) {
             preset_name = argv[++i];
         } else if (arg == "--socket" && i + 1 < argc) {
@@ -418,8 +439,53 @@ int main(int argc, char** argv) {
     if (pa_drain_ms > 2000) {
         pa_drain_ms = 2000;
     }
+    // Low IF by default on air: at zero IF the RX LO feedthrough and the
+    // MAX2851 DC servo notch sit inside every chirp sweep. 500 kHz at 8 Msps
+    // puts both 500 kHz below the channel, outside the DDC passband.
+    if (rx_rate_hz < 0.0) {
+        const char* env = std::getenv("QUADRF_LORA_PHY_RX_RATE");
+        rx_rate_hz = (env && *env) ? std::stod(env) : (ota ? 8e6 : 0.0);
+    }
+    if (rx_if_khz < -1e8) {
+        const char* env = std::getenv("QUADRF_LORA_PHY_RX_IF_KHZ");
+        rx_if_khz = (env && *env) ? std::stod(env) : (ota ? 500.0 : 0.0);
+    }
+    if (const char* env = std::getenv("QUADRF_LORA_PHY_LO_FOLLOW")) {
+        if (std::string(env) == "0") {
+            lo_follow = false;
+        }
+    }
+    if (rx_rate_hz <= 0.0) {
+        rx_rate_hz = params.sample_rate_hz;
+    }
+    if (!ota) {
+        // Digital loopback has no LO; keep host RX at the modem rate.
+        rx_rate_hz = params.sample_rate_hz;
+        rx_if_khz = 0.0;
+    }
+    auto makeDdc = [&](const LoraParams& p) {
+        // Channel filter edges track the LoRa BW: flat to 0.54 BW, stopband
+        // from 0.66 BW (500 kHz: 270 / 330 kHz). Above that, out-of-band noise
+        // lands in the receiver's oversampled dechirp FFT.
+        Ddc::Config c;
+        c.fs_in = rx_rate_hz;
+        c.fs_out = p.sample_rate_hz;
+        c.f_if = rx_if_khz * 1e3;
+        c.pass_hz = 0.54 * p.bandwidth_hz;
+        c.stop_hz = 0.66 * p.bandwidth_hz;
+        return Ddc(c);
+    };
+    Ddc ddc;
+    try {
+        ddc = makeDdc(params);
+    } catch (const std::exception& e) {
+        std::cerr << "bad --rx-rate / --rx-if-khz: " << e.what() << "\n";
+        return 1;
+    }
 
-    const uint64_t center_hz = frequencyMHzToQuantizedHz(center_mhz);
+    // Moves when the LO follower picks up a GUI retune; read from the RX
+    // thread (RxIndicate) and the main loop (TxEnqueue check).
+    std::atomic<uint64_t> center_hz{frequencyMHzToQuantizedHz(center_mhz)};
 
     std::signal(SIGINT, onSignal);
     std::signal(SIGTERM, onSignal);
@@ -514,17 +580,20 @@ int main(int argc, char** argv) {
         if (!rx_only) {
             radio.setSampleRate(SOAPY_SDR_TX, 0, params.sample_rate_hz);
         }
-        radio.setSampleRate(SOAPY_SDR_RX, 0, params.sample_rate_hz);
+        radio.setSampleRate(SOAPY_SDR_RX, 0, rx_rate_hz);
+        // Channel sits at +IF in the host stream, so the RX LO feedthrough and
+        // ADC DC land outside the chirp sweep and the DDC filters them out.
+        const double rx_lo_mhz = center_mhz - rx_if_khz * 1e-3;
 
         if (ota) {
             rf.setDigitalLoopback(false);
             if (rx_only) {
                 rf.txOff();
-                rf.configureRx(center_mhz, rx_gain, rx_bw, rx_ant);
+                rf.configureRx(rx_lo_mhz, rx_gain, rx_bw, rx_ant);
             } else {
                 // Arm TX once (PLL stays locked). Idle PA mute, not --tx off.
                 rf.configureTx(center_mhz, tx_gain, tx_bw, tx_ant);
-                rf.configureRx(center_mhz, rx_gain, rx_bw, rx_ant);
+                rf.configureRx(rx_lo_mhz, rx_gain, rx_bw, rx_ant);
                 rf.paMute();
             }
             std::cerr << "quadrf-lora-phy: OTA center=" << center_mhz << " MHz, tx_gain=" << tx_gain
@@ -532,6 +601,10 @@ int main(int argc, char** argv) {
                       << " dB (bw=" << rx_bw << " MHz), tx_ant=" << tx_ant
                       << ", rx_ant=" << rx_ant << ", pa_drain=" << pa_drain_ms
                       << " ms, rx duck=0 dB during TX\n";
+            std::cerr << "quadrf-lora-phy: RX host=" << rx_rate_hz / 1e6 << " Msps, IF="
+                      << rx_if_khz << " kHz (LO " << rx_lo_mhz << " MHz), ddc="
+                      << (ddc.passthrough() ? "off" : "on") << " taps=" << ddc.stage1Taps()
+                      << "+" << ddc.stage2Taps() << "\n";
         } else {
             if (rx_only) {
                 std::cerr << "--rx-only requires --ota\n";
@@ -644,6 +717,84 @@ int main(int argc, char** argv) {
 
         auto enqueueAirTx = enqueueAir;
 
+        // GUI frequency sliders call `quadrf-jtag --tx/--rx freq=`, which
+        // writes one synth with no knowledge of the RX IF. Poll both synths
+        // while idle and re-place them: TX on the channel, RX at channel - IF.
+        phy::SynthAccess synth;
+        std::optional<phy::LoFollower> follower;
+        bool lo_primed = false;
+        std::string lo_last_err;
+        const int rx_k = std::clamp(static_cast<int>(std::lround(240.0 / std::max(rx_bw, 1))), 5, 63);
+        // What configureRx left: Main0 MODE=010 (RX), D1 = 40 MHz analog BW
+        // when k <= 11; Main6 = E_RX mask in D4:0, gain-prog select in D9:5.
+        // Restored only if an RX retune also changed them.
+        const uint16_t rx_main0 = static_cast<uint16_t>((2u << 2) | ((rx_k > 11 ? 0u : 1u) << 1));
+        const uint16_t rx_mask = static_cast<uint16_t>((rx_ant & 0x1F) ? (rx_ant & 0x1F) : 0x0F);
+        const uint16_t rx_main6 = static_cast<uint16_t>((rx_mask << 5) | rx_mask);
+        if (ota && lo_follow) {
+            follower.emplace(center_mhz, rx_if_khz * 1e-3);
+        }
+        auto pollLoFollow = [&]() {
+            std::lock_guard<std::mutex> lk(rf_tx_mu);
+            if (tx_unmuted || !follower) {
+                return;
+            }
+            using Chip = phy::SynthAccess::Chip;
+            double tx_lo = 0.0, rx_lo = 0.0;
+            uint16_t main0 = 0, main6 = 0;
+            if (!synth.readLo(Chip::kTx, tx_lo) || !synth.readLo(Chip::kRx, rx_lo, &main0, &main6)) {
+                if (synth.lastError() != lo_last_err) {
+                    lo_last_err = synth.lastError();
+                    std::cerr << "lo follow: readback failed (" << lo_last_err << "), retrying\n";
+                }
+                return;
+            }
+            lo_last_err.clear();
+            if (!lo_primed) {
+                follower->programmed(tx_lo, rx_lo);
+                lo_primed = true;
+                std::fprintf(stderr,
+                             "lo follow: on, TX LO %.4f MHz, RX LO %.4f MHz, RX Main0 0x%03x Main6 "
+                             "0x%03x\n",
+                             tx_lo, rx_lo, main0, main6);
+                return;
+            }
+            const auto rt = follower->observe(tx_lo, rx_lo);
+            if (!rt) {
+                return;
+            }
+            const double channel = rt->channel_mhz;
+            const double rx_target = follower->rxLoMhz();
+            std::optional<uint16_t> fix0, fix6;
+            if (rt->rx_moved && main0 != rx_main0) {
+                fix0 = rx_main0;
+            }
+            if (rt->rx_moved && main6 != rx_main6) {
+                fix6 = rx_main6;
+            }
+            // RX first: with the GUI "Tx follow Rx" bit set the FPGA may mirror
+            // RX synth writes to the TX chip, and TX must end on the channel.
+            bool ok = synth.programLo(Chip::kRx, rx_target, fix0, fix6);
+            ok = synth.programLo(Chip::kTx, channel) && ok;
+            double tx_rb = channel, rx_rb = rx_target;
+            if (!ok || !synth.readLo(Chip::kTx, tx_rb) || !synth.readLo(Chip::kRx, rx_rb)) {
+                std::cerr << "lo follow: retune write failed (" << synth.lastError() << ")\n";
+                const phy::SynthWords wt = phy::synthWords(channel);
+                const phy::SynthWords wr = phy::synthWords(rx_target);
+                tx_rb = phy::synthLoMhz(wt.w15, wt.w16, wt.w17);
+                rx_rb = phy::synthLoMhz(wr.w15, wr.w16, wr.w17);
+            }
+            follower->programmed(tx_rb, rx_rb);
+            center_mhz = channel;
+            center_hz = frequencyMHzToQuantizedHz(channel);
+            std::fprintf(stderr,
+                         "lo follow: %s LO moved (TX %.4f, RX %.4f MHz); channel %.4f MHz, TX LO "
+                         "%.4f, RX LO %.4f (IF %.0f kHz)%s%s\n",
+                         rt->tx_moved ? (rt->rx_moved ? "TX+RX" : "TX") : "RX", tx_lo, rx_lo,
+                         channel, tx_rb, rx_rb, rx_if_khz, fix0 ? ", restored RX Main0" : "",
+                         fix6 ? ", restored RX Main6 antennas" : "");
+        };
+
         g_running = true;
         std::thread tx_thread;
         if (!rx_only) {
@@ -715,9 +866,67 @@ int main(int argc, char** argv) {
             }
         });
 
-        streams.activate();
-        const size_t skip_startup = static_cast<size_t>(0.5 * params.sample_rate_hz);
+        const size_t skip_startup = static_cast<size_t>(0.5 * rx_rate_hz);
         size_t stream_pos = 0;
+        size_t reported_drops = 0;
+
+        // Diagnostics: QUADRF_LORA_PHY_RAWDUMP=<path> [_SEC=<s>] records the
+        // host-rate RX stream (pre-DDC, post-startup-skip), then writes it once
+        // full. A .cs16 path stores CF32 x 32512 as int16 pairs (half the RAM;
+        // the CS8 front end has far less resolution than that anyway).
+        std::string rawdump_path;
+        std::vector<int16_t> rawdump;
+        size_t rawdump_cap = 0;
+        size_t rawdump_len = 0;
+        bool rawdump_cs16 = false;
+        if (const char* p = std::getenv("QUADRF_LORA_PHY_RAWDUMP")) {
+            rawdump_path = p;
+            rawdump_cs16 = rawdump_path.size() > 5 &&
+                           rawdump_path.compare(rawdump_path.size() - 5, 5, ".cs16") == 0;
+            double sec = 5.0;
+            if (const char* s = std::getenv("QUADRF_LORA_PHY_RAWDUMP_SEC")) {
+                sec = std::stod(s);
+            }
+            // Capacity in int16 words: 2 per sample for CS16, 4 for CF32.
+            rawdump_cap = static_cast<size_t>(sec * rx_rate_hz) * (rawdump_cs16 ? 2 : 4);
+            // Touch every page now: first-touch faults on hundreds of MB during
+            // streaming stall the main thread long enough to overflow the queue.
+            rawdump.assign(rawdump_cap, 0);
+            std::cerr << "rawdump: " << static_cast<size_t>(sec * rx_rate_hz) << " samples ("
+                      << (rawdump_cs16 ? "cs16" : "cf32") << ") -> " << rawdump_path << "\n";
+        }
+        streams.activate();
+        auto rawdumpFeed = [&](const Sample* s, size_t n) {
+            if (rawdump_cap == 0) {
+                return;
+            }
+            const size_t per = rawdump_cs16 ? 2 : 4;
+            const size_t take = std::min(n, (rawdump_cap - rawdump_len) / per);
+            const size_t at = rawdump_len;
+            rawdump_len += take * per;
+            if (rawdump_cs16) {
+                int16_t* d = rawdump.data() + at;
+                for (size_t i = 0; i < take; ++i) {
+                    d[2 * i] = static_cast<int16_t>(std::lrint(s[i].real() * 32512.0f));
+                    d[2 * i + 1] = static_cast<int16_t>(std::lrint(s[i].imag() * 32512.0f));
+                }
+            } else {
+                std::memcpy(rawdump.data() + at, s, take * sizeof(Sample));
+            }
+            if (rawdump_len == rawdump_cap) {
+                // SD-card write of a few hundred MB takes seconds; keep it off
+                // the RX path.
+                std::thread([buf = std::move(rawdump), path = rawdump_path, per]() {
+                    if (FILE* f = std::fopen(path.c_str(), "wb")) {
+                        std::fwrite(buf.data(), sizeof(int16_t), buf.size(), f);
+                        std::fclose(f);
+                    }
+                    std::cerr << "rawdump: wrote " << buf.size() / per << " samples\n";
+                }).detach();
+                rawdump_cap = 0;
+                rawdump = {};
+            }
+        };
 
         Deframer ipc_deframer;
         phy::stream::Deframer pty_deframer;
@@ -757,7 +966,7 @@ int main(int argc, char** argv) {
             rx.rssi_dbm = 0;  // no calibrated RSSI yet
             rx.cfo_hz = cfo_hz;
             rx.rate_ppm = rate_ppm;
-            rx.freq_hz = center_hz;
+            rx.freq_hz = center_hz.load();
             rx.sir_db = sir_db;
             rx.lvl_dbfs = lvl_dbfs;
             rx.air = air;
@@ -923,6 +1132,7 @@ int main(int argc, char** argv) {
             tx.setWarmupSymbols(static_cast<uint32_t>(warmup_syms));
             tx.setGapSymbols(static_cast<uint32_t>(gap_syms));
             queue.flush();
+            ddc = makeDdc(next);
             reconstruct(receiver, next);
             params = next;
             preset_name = name;
@@ -951,9 +1161,9 @@ int main(int argc, char** argv) {
                     std::cerr << "ipc: bad TxEnqueue\n";
                     continue;
                 }
-                if (!frequencyRequestAccepted(txm.freq_hz, center_hz)) {
+                if (!frequencyRequestAccepted(txm.freq_hz, center_hz.load())) {
                     std::cerr << "ipc: rejecting TxEnqueue frequency " << txm.freq_hz
-                              << " Hz; PHY is configured for " << center_hz << " Hz\n";
+                              << " Hz; PHY is configured for " << center_hz.load() << " Hz\n";
                     continue;
                 }
                 enqueueAirTx(txm.air);
@@ -1043,6 +1253,17 @@ int main(int argc, char** argv) {
                 }
             }
 
+            if (follower && tx_idle && !tx_unmuted) {
+                static auto last_lo_poll = std::chrono::steady_clock::time_point{};
+                const auto now = std::chrono::steady_clock::now();
+                // Readback is Main14 + 3-5 SPI reads per chip under the JTAG
+                // lease; 100 ms polling showed no RX loss over 1000 frames.
+                if (now - last_lo_poll >= std::chrono::seconds(1)) {
+                    last_lo_poll = now;
+                    pollLoFollow();
+                }
+            }
+
             // Air-IPC: node → PHY
             if (client_fd >= 0) {
                 pollfd pfd{client_fd, POLLIN, 0};
@@ -1087,6 +1308,7 @@ int main(int argc, char** argv) {
             }
 
             std::vector<Sample> chunk;
+            std::vector<Sample> baseband;
             bool had_samples = false;
             while (queue.pop(chunk, had_samples ? 0 : 20)) {
                 had_samples = true;
@@ -1096,9 +1318,22 @@ int main(int argc, char** argv) {
                 }
                 stream_pos += chunk.size();
                 if (off < chunk.size()) {
-                    receiver.feed(chunk.data() + off, chunk.size() - off);
+                    rawdumpFeed(chunk.data() + off, chunk.size() - off);
+                    if (ddc.passthrough()) {
+                        receiver.feed(chunk.data() + off, chunk.size() - off);
+                    } else {
+                        baseband.clear();
+                        ddc.process(chunk.data() + off, chunk.size() - off, baseband);
+                        receiver.feed(baseband.data(), baseband.size());
+                    }
                 }
                 drainRx();
+                const size_t dropped = queue.dropped.load();
+                if (dropped != reported_drops) {
+                    std::cerr << "rx queue overflow: " << dropped - reported_drops
+                              << " chunk(s) of " << mtu << " lost (total " << dropped << ")\n";
+                    reported_drops = dropped;
+                }
             }
             if (!had_samples) {
                 flushLegacyFromRadio();
@@ -1127,7 +1362,8 @@ int main(int argc, char** argv) {
         cleanup_socks();
 
         std::cerr << "stats: tx_enqueued=" << tx_enqueued << " rx_delivered=" << rx_delivered
-                  << " tx_started=" << tx.framesStarted() << "\n";
+                  << " tx_started=" << tx.framesStarted()
+                  << " rx_chunks_dropped=" << queue.dropped.load() << "\n";
 
         if (selftest) {
             const bool pass = rx_delivered >= 1;

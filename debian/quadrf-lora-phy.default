@@ -1,6 +1,7 @@
 # QuadRF LoRa PHY startup (systemd EnvironmentFile for quadrf-lora-phy.service).
 # Edit and: sudo systemctl restart quadrf-lora-phy quadrf-meshtasticd
-# The appliance GUI can still retune LO / gain / Ch: masks until the next PHY start.
+# The appliance GUI frequency sliders retune the channel live (PHY follows them
+# and keeps the RX IF offset). GUI gain and Ch: masks still override until restart.
 
 # --ota = RF over the air. --digital = FPGA loopback (no RF).
 QUADRF_LORA_PHY_MODE=--ota
@@ -20,6 +21,20 @@ QUADRF_LORA_PHY_AMPLITUDE=0.7
 # multi-path self-cancellation. PHY also programs interleave=0, autosteer=0.
 QUADRF_LORA_PHY_TX_ANT=1
 QUADRF_LORA_PHY_RX_ANT=1
+
+# Low-IF receive. RX LO sits at FREQ - IF; the host stream runs at RX_RATE and
+# a DDC (NCO + 2-stage FIR, NEON) shifts the channel back to 0 Hz and
+# decimates to 1 Msps. Moves the chirps off the zero-IF DC servo notch and
+# replaces the driver's unfiltered Farrow decimation: SF7/500k 10% PER goes
+# from -2.6 to -6.4 dB S/(N0*BW). Costs ~0.35 A76 core. RX_IF_KHZ=0 with
+# RX_RATE=1e6 is the old zero-IF path.
+QUADRF_LORA_PHY_RX_RATE=8e6
+QUADRF_LORA_PHY_RX_IF_KHZ=500
+
+# Poll the synths once a second while idle; when the GUI (or quadrf-jtag)
+# moves the TX or RX LO, that frequency becomes the channel: TX LO = channel,
+# RX LO = channel - IF. Set 0 to leave GUI LO writes alone.
+QUADRF_LORA_PHY_LO_FOLLOW=1
 
 # Baseband filter MHz
 QUADRF_LORA_PHY_RX_BW=4
