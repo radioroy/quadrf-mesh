@@ -42,6 +42,13 @@ below it (and restores the RX mode / antenna mask if the retune changed them).
 The GUI therefore shows RX LO = channel - 0.5 MHz. `QUADRF_LORA_PHY_LO_FOLLOW=0`
 disables this. GUI gain and Ch: masks still override until PHY restarts.
 
+PhaseGaze and quadrf-rf-vision pin the MAX2851 VCO sub-band (Main19 manual
+VAS) and leave it pinned on exit; `quadrf-jtag --rx freq=` does not undo
+that, so the RX LO cannot reach the channel (deaf receiver, or nothing below
+~5760 MHz). PHY start puts both synths back on automatic VAS and logs
+`RX VCO sub-band N, tune ADC M[; was pinned to ...]`. A tune ADC of 0 or 7
+means the VCO is at a rail and the LO is not locked.
+
 Meshtastic `lora.override_frequency` is kept at 0 and does not tune the
 radio. `lora.modem_preset` is sent to PHY (Short Turbo or Short Fast):
 

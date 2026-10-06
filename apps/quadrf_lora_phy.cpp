@@ -49,6 +49,7 @@
 #include <mutex>
 #include <new>
 #include <optional>
+#include <tuple>
 #include <string>
 #include <thread>
 #include <utility>
@@ -595,6 +596,34 @@ int main(int argc, char** argv) {
                 rf.configureTx(center_mhz, tx_gain, tx_bw, tx_ant);
                 rf.configureRx(rx_lo_mhz, rx_gain, rx_bw, rx_ant);
                 rf.paMute();
+            }
+            // quadrf-jtag --tx/--rx leave Main19 alone; another app may have
+            // pinned the VCO sub-band (see SynthAccess::VcoState).
+            {
+                using Chip = phy::SynthAccess::Chip;
+                phy::SynthAccess vco;
+                for (const auto& [chip, name, lo] :
+                     {std::tuple{Chip::kTx, "TX", center_mhz}, std::tuple{Chip::kRx, "RX", rx_lo_mhz}}) {
+                    phy::SynthAccess::VcoState before, after;
+                    const bool had = vco.readVco(chip, before);
+                    if (!vco.programLo(chip, lo)) {
+                        std::cerr << "quadrf-lora-phy: " << name << " VCO auto-select write failed ("
+                                  << vco.lastError() << ")\n";
+                        continue;
+                    }
+                    usleep(2000);
+                    if (!vco.readVco(chip, after)) {
+                        continue;
+                    }
+                    std::fprintf(stderr, "quadrf-lora-phy: %s VCO sub-band %u, tune ADC %u%s", name,
+                                 after.band, after.tune_adc,
+                                 after.tuneInRange() ? "" : " (at rail, LO not locked)");
+                    if (had && !before.autoSelect()) {
+                        std::fprintf(stderr, "; was pinned to sub-band %u (Main19 0x%03x)",
+                                     before.main19 & 0x3Fu, before.main19);
+                    }
+                    std::fprintf(stderr, "\n");
+                }
             }
             std::cerr << "quadrf-lora-phy: OTA center=" << center_mhz << " MHz, tx_gain=" << tx_gain
                       << " dB (bw=" << tx_bw << " MHz), rx_gain=" << rx_gain

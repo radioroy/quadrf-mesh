@@ -68,12 +68,28 @@ public:
     // switched to SPI readback, then restores DOUT to PLL lock detect.
     bool readLo(Chip chip, double& lo_mhz, uint16_t* main0 = nullptr,
                 uint16_t* main6 = nullptr) const;
-    // Writes Main15/16/17 (+ Main2 LNA band on RX); the Main17 write starts VAS.
-    // Optional RX Main0/Main6 restores: the max285x.c in the appliance source
-    // tree rewrites both on any `--rx` (all four antennas, 40 MHz); quadrf-fpga
+    // Writes Main19 back to automatic VCO sub-band select, then Main15/16/17
+    // (+ Main2 LNA band on RX); the Main17 write starts VAS. Optional RX
+    // Main0/Main6 restores: the max285x.c in the appliance source tree
+    // rewrites both on any `--rx` (all four antennas, 40 MHz); quadrf-fpga
     // 1.0.32 does not.
     bool programLo(Chip chip, double lo_mhz, std::optional<uint16_t> main0 = std::nullopt,
                    std::optional<uint16_t> main6 = std::nullopt) const;
+
+    // Main19 = VAS_RELOCK_SEL (D7), VAS_MODE (D6), VAS_SPI[5:0]. With D6
+    // clear the VCO stays on VAS_SPI no matter what Main15-17 ask for.
+    // PhaseGaze / rf-vision leave the MAX2851 like that (pinned to the band
+    // of their last hop), and `quadrf-jtag --rx freq=` never rewrites Main19,
+    // so the RX LO cannot reach the requested frequency: measured as a deaf
+    // receiver at sub-band 63, and a cliff below ~5760 MHz at sub-band 55.
+    struct VcoState {
+        uint16_t main19 = 0;   // written value
+        uint8_t band = 0;      // sub-band in use (Main27 VAS_VCO_READ)
+        uint8_t tune_adc = 0;  // 3-bit tune-voltage ADC; 0 or 7 = at a rail
+        bool autoSelect() const { return (main19 & 0x40u) != 0; }
+        bool tuneInRange() const { return tune_adc >= 1 && tune_adc <= 6; }
+    };
+    bool readVco(Chip chip, VcoState& st) const;
 
     const std::string& lastError() const { return err_; }
 

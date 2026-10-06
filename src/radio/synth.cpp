@@ -29,6 +29,13 @@ constexpr uint32_t kFracOne = 1u << 20;
 // 1 = SPI readback). quadrf-jtag assumes lock detect between commands.
 constexpr uint16_t kMain14 = 0x160;
 constexpr uint16_t kReadCmd = 0x8000;
+// quadrf-jtag --init templates: VAS_MODE (D6) = auto, VAS_SPI = 31 start.
+constexpr uint16_t kMain19AutoRx = 0x0DF;
+constexpr uint16_t kMain19AutoTx = 0x05F;
+// Main27 default; D5 = VAS_VCO_READ swaps the Main19 readback to the VAS
+// result: band in D5:0, tune ADC in D8:6.
+constexpr uint16_t kMain27 = 0x180;
+constexpr uint16_t kMain27VcoRead = kMain27 | 0x020;
 
 uint16_t word(unsigned reg, unsigned data10) {
     return static_cast<uint16_t>(((reg & 0x3Fu) << 10) | (data10 & 0x3FFu));
@@ -202,6 +209,7 @@ bool SynthAccess::programLo(Chip chip, double lo_mhz, std::optional<uint16_t> ma
     if (main0) {
         t.write(a, word(0, *main0));
     }
+    t.write(a, word(19, chip == Chip::kRx ? kMain19AutoRx : kMain19AutoTx));
     // Same order as quadrf-jtag (max285x_set_freq_common).
     const SynthWords w = synthWords(lo_mhz);
     t.write(a, w.w15);
@@ -210,6 +218,24 @@ bool SynthAccess::programLo(Chip chip, double lo_mhz, std::optional<uint16_t> ma
     if (chip == Chip::kRx) {
         t.write(a, word(2, max2851LnaBandReg2(lo_mhz)));
     }
+    return t.ok();
+}
+
+bool SynthAccess::readVco(Chip chip, VcoState& st) const {
+    Transaction t(dev_, err_);
+    const uint8_t a = static_cast<uint8_t>(chip);
+    auto readMain = [&](unsigned reg) {
+        t.write(a, static_cast<uint16_t>(kReadCmd | ((reg & 0x1Fu) << 10)));
+        return static_cast<uint16_t>(t.read(a) & 0x3FFu);
+    };
+    t.write(a, word(14, kMain14 | 0x2u));
+    st.main19 = readMain(19);
+    t.write(a, word(27, kMain27VcoRead));
+    const uint16_t vas = readMain(19);
+    t.write(a, word(27, kMain27));
+    t.write(a, word(14, kMain14));
+    st.band = static_cast<uint8_t>(vas & 0x3Fu);
+    st.tune_adc = static_cast<uint8_t>((vas >> 6) & 0x7u);
     return t.ok();
 }
 
