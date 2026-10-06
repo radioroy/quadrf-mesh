@@ -21,7 +21,7 @@ override_dh_auto_configure:
 override_dh_auto_build:
 	dh_auto_build -- quadrf-lora-phy quadrf-mesh-monitor air_ipc_offline_test \
 		meshtastic_air_ipc_consumer_test bridge_offline_test lora_offline_test \
-		chirp_offline
+		ddc_offline_test synth_offline_test chirp_offline
 	./scripts/build-meshtasticd-offline.sh \
 		"$(CURDIR)/debian/build-meshtasticd" \
 		"$(CURDIR)/debian/meshtasticd-quadrf"
