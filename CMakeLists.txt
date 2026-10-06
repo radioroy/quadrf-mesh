@@ -90,6 +90,7 @@ add_library(phy_radio STATIC
     src/radio/radio_session.cpp
     src/radio/stream_pair.cpp
     src/radio/rf_frontend.cpp
+    src/radio/synth.cpp
 )
 target_include_directories(phy_radio PUBLIC include)
 target_link_libraries(phy_radio PUBLIC SoapySDR)
@@ -126,6 +127,10 @@ set_target_properties(lora_offline_test PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${C
 add_executable(ddc_offline_test tests/ddc_offline_test.cpp)
 target_link_libraries(ddc_offline_test PRIVATE phy_lora)
 set_target_properties(ddc_offline_test PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/tests")
+
+add_executable(synth_offline_test tests/synth_offline_test.cpp)
+target_link_libraries(synth_offline_test PRIVATE phy_radio)
+set_target_properties(synth_offline_test PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/tests")
 
 add_executable(bridge_offline_test tests/bridge_offline_test.cpp)
 target_link_libraries(bridge_offline_test PRIVATE phy_bridge)
@@ -164,6 +169,7 @@ if(BUILD_TESTING)
     add_test(NAME mesh-bridge COMMAND bridge_offline_test)
     add_test(NAME lora-scalar COMMAND lora_offline_test)
     add_test(NAME ddc COMMAND ddc_offline_test)
+    add_test(NAME synth COMMAND synth_offline_test)
     add_test(NAME chirp-offline COMMAND chirp_offline)
 endif()
 
