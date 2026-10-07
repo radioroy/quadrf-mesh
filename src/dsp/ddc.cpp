@@ -133,6 +133,7 @@ Ddc::Ddc(const Config& cfg) : cfg_(cfg) {
             throw std::invalid_argument("Ddc: IF offset needs fs_in > fs_out");
         }
         passthrough_ = true;
+        noise_bw_hz_ = cfg.fs_in;
         return;
     }
     if (ratio % 2 != 0) {
@@ -150,6 +151,31 @@ Ddc::Ddc(const Config& cfg) : cfg_(cfg) {
                              cfg.atten_db);
     }
     st2_ = DecimatingFir(fs_mid, 2, cfg.pass_hz, cfg.stop_hz, cfg.atten_db);
+
+    // Cascade impulse response at fs_in: h1 * (h2 upsampled by ratio/2).
+    // Both stages have unit DC gain, so white input of density N0 leaves
+    // N0 * fs_in * sum(h^2) per output sample.
+    {
+        const std::vector<float>& h2 = st2_.coefficients();
+        std::vector<double> h;
+        if (use_st1_) {
+            const std::vector<float>& h1 = st1_.coefficients();
+            const size_t m1 = ratio / 2;
+            h.assign(h1.size() + (h2.size() - 1) * m1, 0.0);
+            for (size_t j = 0; j < h2.size(); ++j) {
+                for (size_t i = 0; i < h1.size(); ++i) {
+                    h[i + j * m1] += static_cast<double>(h1[i]) * h2[j];
+                }
+            }
+        } else {
+            h.assign(h2.begin(), h2.end());
+        }
+        double e = 0.0;
+        for (const double v : h) {
+            e += v * v;
+        }
+        noise_bw_hz_ = cfg.fs_in * e;
+    }
 
     if (cfg.f_if != 0.0) {
         const double cyc = cfg.f_if / cfg.fs_in;

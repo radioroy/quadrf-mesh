@@ -46,6 +46,15 @@ uint8_t hammingDecode(uint8_t codeword, uint8_t cr_app);
 uint32_t grayDecode(uint32_t g, uint8_t bits);
 uint32_t grayEncode(uint32_t b);
 
+// Reduced-rate symbols (header block, LDRO data) carry sf-2 data bits, a
+// parity bit and a zero. The parity makes the two LSBs of the gray-demapped
+// word zero, so TX chips always land on 4q + 1. Reading q as raw >> 2
+// centres the decision: chip errors -1..+2 still decode, where
+// (raw - 1) >> 2 only tolerated 0..+3.
+inline uint32_t reducedValue(uint32_t raw, uint32_t n_chips) {
+    return (raw % n_chips) >> 2;
+}
+
 // Diagonal interleaver for one block: sf_app codewords of cw_len bits each
 // -> cw_len symbols. Reduced-rate blocks (header / LDRO) append a parity
 // bit and a zero so symbols are always sf bits wide.

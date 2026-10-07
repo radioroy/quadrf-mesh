@@ -75,6 +75,10 @@ class QuadRFRadio : public RadioInterface, protected concurrency::NotifiedWorker
     void onNotify(uint32_t notification) override;
     void startSend(meshtastic_MeshPacket *txp);
     void pushModemToPhy();
+    uint8_t phyPresetFromMeshtastic();
+    // Airtime / slot timing for presets the firmware no longer defines.
+    void applyPhyModemTiming();
+    void applyPresetRequest();
 
     bool connectSocket();
     void closeSocket();
@@ -113,6 +117,8 @@ class QuadRFRadio : public RadioInterface, protected concurrency::NotifiedWorker
     int ctl_sock_fd_ = -1;
     std::atomic<bool> control_running_{false};
     std::thread control_thread_;
+    // Air-IPC preset id from the control socket, applied on the radio thread.
+    std::atomic<int> pending_preset_{-1};
 
     mutable std::mutex callsign_mu_;
     std::string callsign_ = "NOCALL";

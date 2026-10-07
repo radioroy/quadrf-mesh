@@ -1,5 +1,6 @@
 // Offline tests for the PHY to node air-frame IPC. No radio hardware.
 
+#include <phy/lora/presets.hpp>
 #include <phy/mesh/packet.hpp>
 #include <quadrf/air_ipc.hpp>
 #include <tests/air_ipc_golden_vectors.hpp>
@@ -8,6 +9,7 @@
 #include <cstdio>
 #include <cstring>
 #include <iostream>
+#include <utility>
 #include <vector>
 
 using namespace quadrf::air_ipc;
@@ -219,6 +221,36 @@ int main() {
               "decode SetModem shortfast");
         CHECK(messageTypeKnown(static_cast<uint8_t>(MsgType::kSetModem)),
               "SetModem is a known type");
+
+        using phy::lora::MeshtasticPreset;
+        const std::pair<uint8_t, MeshtasticPreset> ids[] = {
+            {kPresetShortTurbo, MeshtasticPreset::kShortTurbo},
+            {kPresetShortFast, MeshtasticPreset::kShortFast},
+            {kPresetShortSlow, MeshtasticPreset::kShortSlow},
+            {kPresetMediumFast, MeshtasticPreset::kMediumFast},
+            {kPresetMediumSlow, MeshtasticPreset::kMediumSlow},
+            {kPresetLongFast, MeshtasticPreset::kLongFast},
+            {kPresetLongModerate, MeshtasticPreset::kLongModerate},
+            {kPresetLongSlow, MeshtasticPreset::kLongSlow},
+            {kPresetVeryLongSlow, MeshtasticPreset::kVeryLongSlow},
+            {kPresetLongTurbo, MeshtasticPreset::kLongTurbo},
+        };
+        for (const auto& [id, preset] : ids) {
+            MeshtasticPreset got_preset;
+            CHECK(phy::lora::meshtasticPresetFromId(id, got_preset) && got_preset == preset,
+                  "Air-IPC preset id matches PHY preset");
+            SetModem sm_id;
+            sm_id.preset = id;
+            std::vector<uint8_t> f;
+            std::vector<Deframer::Frame> fs;
+            Deframer dd;
+            SetModem back;
+            CHECK(encodeSetModem(sm_id, f) && dd.feed(f, fs) == 1 &&
+                      decodeSetModem(fs[0].body, back) && back.preset == id,
+                  "SetModem round trip for every preset id");
+        }
+        MeshtasticPreset unused;
+        CHECK(!phy::lora::meshtasticPresetFromId(10, unused), "preset id 10 is unknown");
     }
 
     // --- snr helpers ---

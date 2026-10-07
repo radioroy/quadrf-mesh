@@ -20,6 +20,18 @@ struct LoraParams {
     // live hardware TCXOs stay within ~+/-20 ppm, so noise-driven slope fits
     // beyond the bound get clamped instead of warping the payload resample.
     double max_rate_ppm = 0.0;
+    // Largest carrier offset to expect, Hz. The up/down-chirp solve reads
+    // CFO modulo BW/2, so when this exceeds BW/4 (62.5 kHz BW against the
+    // ~15 kHz inter-unit offset at 5.8 GHz) sync also tries the alias
+    // cfo +- BW/2. The PHY channel filter is opened by the same amount.
+    // 0 = no alias hypotheses.
+    double max_cfo_hz = 0.0;
+    // Noise bandwidth of the RX front end ahead of the receiver (DDC
+    // Ddc::noiseBandwidthHz()). The dechirped fold collects noise from that
+    // whole band, so the per-symbol SNR reads 10*log10(noise_bw / BW) low
+    // against S / (N0 * BW); ReceivedFrame::snr_db adds it back.
+    // 0 = treat as BW (no correction).
+    double rx_noise_bw_hz = 0.0;
     // Data symbols: coherent two-image fold (SymbolDemod::demodData) once the
     // per-frame rotation estimate locks. false = power fold over all images.
     bool coherent_fold = true;
@@ -33,6 +45,8 @@ struct LoraParams {
     // per-symbol channelSnrDb. Below it, noise alone passes the louder/tighter
     // test and each accepted trial permanently shifts the grid. On the OTA
     // captures any gate >= 3 dB matched never refining, at all noise levels.
+    // Both SNR gates here are SF7 channel SNR; the receiver lowers them by
+    // 10*log10(2^SF / 128) so they sit at the same per-symbol SNR at any SF.
     double refine_min_snr_db = 6.0;
     // Soft-decision header/payload decode (LLR deinterleave + ML Hamming)
     // when the hard path fails its checksum / CRC.
@@ -43,6 +57,17 @@ struct LoraParams {
     // Soft CRC passes need DecodeResult::tail_margin >= this (nats). At 2.0
     // ~0.6% of correct soft decodes near the cliff are dropped.
     double soft_tail_margin = 2.0;
+    // Relative carrier wander between TX and RX: RMS rate (Hz/s) and the
+    // spread it saturates at (Hz). See wanderChipsPerSymbol. When the
+    // expected change per symbol reaches ~0.05 chip the receiver tracks the
+    // carrier inside each symbol instead of holding the sync estimate, and
+    // drops the preamble rate fit (wander reads as rate). 0 = off.
+    double wander_rate_hz_per_s = 0.0;
+    double wander_cap_hz = 750.0;
+    // Integrated-random-walk intensity of the same wander, Hz^2/s^3: the
+    // carrier's second derivative as white noise. The CW capture's second
+    // differences give ~2e12 at 2-8 ms lags. Drives the frame-end slip search.
+    double wander_irw_q = 0.0;
 };
 
 inline uint32_t chipCount(const LoraParams& p) {

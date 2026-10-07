@@ -78,16 +78,28 @@ inline double channelSnrDb(const ChipPeak& pk, uint32_t n_chips, uint8_t sf) {
            10.0 * std::log10(static_cast<double>(1u << sf));
 }
 
-// Winner vs second tone. High = clean; low = collision or LO-ripple sideband.
-inline double sirDb(const ChipPeak& pk) {
-    if (pk.lobe_power <= 0.0) {
-        return 0.0;
-    }
-    if (pk.mag2 <= 0.0) {
-        return 40.0;
-    }
-    return 10.0 * std::log10(pk.lobe_power / pk.mag2);
-}
+// Reported when no second tone stands out of the noise; also the ceiling.
+inline constexpr double kSirCeilingDb = 30.0;
+
+// Decision-aided frame metrics, for frames whose CRC passed so the sent
+// values are known. rows: n_rows x n_chips folded magnitudes in value order
+// (Receiver soft rows, row[v] = sqrt(power of value v)).
+//
+//   snr_db: sum(lobe - 5n) / (N * sum(n)) at the true value, lobe = +-2
+//           bins, n = off-lobe mean. Measured at the sent bin, so symbols
+//           the demodulator got wrong count as weak signal rather than as
+//           a noise maximum; no upward bias near the cliff.
+//   sir_db: signal vs the strongest other tone (+-2 lobe around the
+//           largest bin more than 4 chips from the true one), averaged over
+//           the frame, minus what the max of N noise bins contributes on its
+//           own. kSirCeilingDb when that excess is not significant. A co-SF
+//           LoRa interferer straddles our symbols, so it reads ~2 dB high.
+struct FrameMetrics {
+    double snr_db = 0.0;
+    double sir_db = kSirCeilingDb;
+};
+FrameMetrics decisionAidedMetrics(const float* rows, size_t n_rows, uint32_t n_chips,
+                                  const std::vector<uint16_t>& values);
 
 // Uncalibrated signal level from folded power. Amplitude 1.0 -> 0 dBFS.
 inline double levelDbfs(double mean_total_power, uint32_t n_fft) {
@@ -189,6 +201,9 @@ public:
     const std::vector<double>& foldedCoherent() const { return folded_co_; }
     uint32_t chipsPerSymbol() const { return n_chips_; }
     uint32_t oversampling() const { return sps_ / n_chips_; }
+    // Dechirp references: down for up-chirp windows, up for the SFD.
+    const IQBuffer& upchirp() const { return up_; }
+    const IQBuffer& downchirp() const { return down_; }
 
 private:
     uint32_t sps_ = 0;

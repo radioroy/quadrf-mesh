@@ -7,7 +7,9 @@
 QUADRF_LORA_PHY_MODE=--ota
 QUADRF_LORA_PHY_SOCKET=/run/quadrf/phy.sock
 
-# shortturbo (500 kHz SF7) or shortfast (250 kHz SF7)
+# Startup preset until meshtasticd sends lora.modem_preset: shortturbo (500 kHz
+# SF7), shortfast, shortslow, mediumfast, mediumslow, longfast, longmoderate,
+# longslow, verylongslow (62.5 kHz SF12), longturbo.
 QUADRF_LORA_PHY_PRESET=shortturbo
 
 # Center MHz. Meshtastic lora.override_frequency does not set this.
@@ -24,7 +26,7 @@ QUADRF_LORA_PHY_RX_ANT=1
 
 # Low-IF receive. RX LO sits at FREQ - IF; the host stream runs at RX_RATE and
 # a DDC (NCO + 2-stage FIR, NEON) shifts the channel back to 0 Hz and
-# decimates to 1 Msps. Moves the chirps off the zero-IF DC servo notch and
+# decimates to twice the preset bandwidth (1 Msps at Short Turbo). Moves the chirps off the zero-IF DC servo notch and
 # replaces the driver's unfiltered Farrow decimation: SF7/500k 10% PER goes
 # from -2.6 to -6.4 dB S/(N0*BW). Costs ~0.35 A76 core. RX_IF_KHZ=0 with
 # RX_RATE=1e6 is the old zero-IF path.

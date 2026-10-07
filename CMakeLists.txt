@@ -59,6 +59,7 @@ add_library(phy_lora STATIC
     src/lora/demodulator.cpp
     src/lora/receiver.cpp
     src/lora/transmitter.cpp
+    src/lora/wander.cpp
 )
 target_include_directories(phy_lora PUBLIC include)
 target_link_libraries(phy_lora PUBLIC phy_dsp)
@@ -117,6 +118,10 @@ add_executable(lora_file_decode apps/lora_file_decode.cpp)
 target_link_libraries(lora_file_decode PRIVATE phy_lora)
 set_target_properties(lora_file_decode PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/apps")
 
+add_executable(lora_awgn_sweep apps/lora_awgn_sweep.cpp)
+target_link_libraries(lora_awgn_sweep PRIVATE phy_lora)
+set_target_properties(lora_awgn_sweep PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/apps")
+
 phy_add_app(lora_loopback)
 target_link_libraries(lora_loopback PRIVATE phy_lora)
 target_sources(lora_loopback PRIVATE src/util/debug_dumper.cpp)
@@ -164,7 +169,7 @@ set_target_properties(quadrf-lora-phy PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMA
 
 pkg_check_modules(SDL2 REQUIRED sdl2)
 add_executable(quadrf-mesh-monitor apps/quadrf_mesh_monitor.cpp)
-target_include_directories(quadrf-mesh-monitor PRIVATE ${SDL2_INCLUDE_DIRS} apps)
+target_include_directories(quadrf-mesh-monitor PRIVATE ${SDL2_INCLUDE_DIRS} apps ${CMAKE_SOURCE_DIR}/include)
 target_link_libraries(quadrf-mesh-monitor PRIVATE ${SDL2_LIBRARIES} pthread)
 target_compile_definitions(quadrf-mesh-monitor PRIVATE
     QUADRF_MESH_VERSION="v${QUADRF_MESH_RELEASE_VERSION}"

@@ -2,6 +2,8 @@
 // QuadRF Mesh Monitor - Minimalist SDL2 Telemetry & Control Interface
 #include "font8x16.hpp"
 
+#include <phy/lora/presets.hpp>
+
 #include <SDL.h>
 #include <sys/socket.h>
 #include <sys/un.h>
@@ -9,6 +11,7 @@
 #include <fcntl.h>
 
 #include <algorithm>
+#include <cctype>
 #include <atomic>
 #include <chrono>
 #include <cstdio>
@@ -58,6 +61,8 @@ struct AppState {
     std::atomic<bool> parrot_active{false};
     std::string callsign{"NOCALL"};
     std::string preset{"ShortTurbo"};
+    int preset_sf = 7;
+    int preset_id = 0;  // Air-IPC id, as last announced by the PHY
 
     int scroll_offset = 0;
 };
@@ -81,32 +86,46 @@ constexpr Color kStatusRed      = {239, 68, 68, 255};
 constexpr Color kBtnNormal      = {38, 38, 38, 255};
 constexpr Color kBtnHover       = {50, 50, 50, 255};
 
-// Channel SNR: SF7 CR4/5 cliff is ~-7.5 dB. Green = ~7 dB of decode room.
-Color snrColor(float snr_db, bool echo) {
+// Channel SNR in the LoRa bandwidth. Demod cliff is about -7.5 dB at SF7 and
+// 2.5 dB lower per SF step (SX127x datasheet limits); green = 7.5 dB of room.
+Color snrColor(float snr_db, int sf, bool echo) {
     if (echo) {
         return kTextMuted;
     }
-    if (snr_db >= 0.0f) {
+    const float cliff_db = -7.5f - 2.5f * static_cast<float>(sf - 7);
+    if (snr_db >= cliff_db + 7.5f) {
         return kStatusGreen;
     }
-    if (snr_db >= -7.5f) {
+    if (snr_db >= cliff_db) {
         return kStatusAmber;
     }
     return kStatusRed;
 }
 
-// SIR: 10 dB ~ clean; 6 dB is near the 0.30 mag2/peak CRC-alternate gate.
+// PHY reports phy::lora::kSirCeilingDb when no second tone stands out of the
+// noise. Co-SF capture needs roughly 6 dB; by 12 dB an interferer costs
+// nothing measurable.
+constexpr float kSirCeilingDb = 30.0f;
+
 Color sirColor(float sir_db, bool echo) {
     if (echo) {
         return kTextMuted;
     }
-    if (sir_db >= 10.0f) {
+    if (sir_db >= 12.0f) {
         return kStatusGreen;
     }
     if (sir_db >= 6.0f) {
         return kStatusAmber;
     }
     return kStatusRed;
+}
+
+void formatSir(char* buf, size_t len, float sir_db) {
+    if (sir_db >= kSirCeilingDb - 0.05f) {
+        snprintf(buf, len, "  >%.0f", kSirCeilingDb);
+    } else {
+        snprintf(buf, len, "%+5.1f", sir_db);
+    }
 }
 
 void setColor(SDL_Renderer* ren, const Color& c) {
@@ -220,14 +239,37 @@ std::string formatTime(uint64_t ts_ms) {
     return std::string(buf);
 }
 
-std::string presetDisplayName(const std::string& key) {
-    if (key == "shortturbo") {
-        return "ShortTurbo";
+// "LONG_MODERATE" -> "LongModerate"
+std::string presetDisplayName(phy::lora::MeshtasticPreset preset) {
+    std::string out;
+    bool upper = true;
+    for (const char* c = phy::lora::meshtasticModemPresetName(preset); *c; ++c) {
+        if (*c == '_') {
+            upper = true;
+            continue;
+        }
+        out += upper ? *c : static_cast<char>(std::tolower(static_cast<unsigned char>(*c)));
+        upper = false;
     }
-    if (key == "shortfast") {
-        return "ShortFast";
-    }
-    return key;
+    return out;
+}
+
+// Preset menu, fastest to slowest airtime.
+constexpr phy::lora::MeshtasticPreset kPresetMenu[] = {
+    phy::lora::MeshtasticPreset::kShortTurbo,   phy::lora::MeshtasticPreset::kShortFast,
+    phy::lora::MeshtasticPreset::kShortSlow,    phy::lora::MeshtasticPreset::kMediumFast,
+    phy::lora::MeshtasticPreset::kMediumSlow,   phy::lora::MeshtasticPreset::kLongTurbo,
+    phy::lora::MeshtasticPreset::kLongFast,     phy::lora::MeshtasticPreset::kLongModerate,
+    phy::lora::MeshtasticPreset::kLongSlow,     phy::lora::MeshtasticPreset::kVeryLongSlow,
+};
+constexpr int kPresetMenuRows = static_cast<int>(sizeof(kPresetMenu) / sizeof(kPresetMenu[0]));
+
+std::string presetMenuLabel(phy::lora::MeshtasticPreset preset) {
+    const auto& info = phy::lora::meshtasticPresetInfo(preset);
+    char buf[48];
+    snprintf(buf, sizeof(buf), "%-14s%5.1fk SF%-2u CR4/%u", presetDisplayName(preset).c_str(),
+             info.bandwidth_hz / 1e3, static_cast<unsigned>(info.sf), static_cast<unsigned>(info.cr + 4));
+    return buf;
 }
 
 std::string formatNodeId(uint32_t node) {
@@ -300,8 +342,15 @@ void telemetryClientThread(AppState& state, const std::string& sock_path) {
                 std::string val;
                 if (parseJsonField(line, "type", val) && val == "modem") {
                     if (parseJsonField(line, "preset", val) && !val.empty()) {
+                        phy::lora::MeshtasticPreset preset;
                         std::lock_guard<std::mutex> lk(state.mu);
-                        state.preset = presetDisplayName(val);
+                        if (phy::lora::parseMeshtasticPreset(val, preset)) {
+                            state.preset = presetDisplayName(preset);
+                            state.preset_sf = phy::lora::meshtasticPresetInfo(preset).sf;
+                            state.preset_id = static_cast<int>(preset);
+                        } else {
+                            state.preset = val;
+                        }
                     }
                     continue;
                 }
@@ -532,6 +581,19 @@ int main(int argc, char* argv[]) {
     Button btn_range  = {133, 80, 125, 36, "RANGE: OFF"};
     Button btn_parrot = {266, 80, 54, 36, ""};
     Button btn_clear  = {328, 80, 106, 36, "Clear Log"};
+    Button btn_preset = {667, 8, 210, 30, ""};
+    const int menu_x = btn_preset.x;
+    const int menu_y = btn_preset.y + btn_preset.h + 2;
+    const int menu_w = 288;
+    const int menu_row_h = 22;
+    bool menu_open = false;
+    int menu_hover = -1;
+    // Requested preset until the PHY announces it; meshtasticd saves it and
+    // restarts (with PHY) about 7 s after the request.
+    int preset_pending = -1;
+    auto preset_pending_since = std::chrono::steady_clock::now();
+    std::string preset_note;
+    auto preset_note_until = std::chrono::steady_clock::now();
 
     bool running = true;
     auto last_status_check = std::chrono::steady_clock::now();
@@ -548,10 +610,43 @@ int main(int argc, char* argv[]) {
                 btn_range.is_hovered = btn_range.contains(mx, my);
                 btn_parrot.is_hovered = btn_parrot.contains(mx, my);
                 btn_clear.is_hovered = btn_clear.contains(mx, my);
+                btn_preset.is_hovered = btn_preset.contains(mx, my);
+                menu_hover = -1;
+                if (menu_open && mx >= menu_x && mx < menu_x + menu_w && my >= menu_y &&
+                    my < menu_y + kPresetMenuRows * menu_row_h) {
+                    menu_hover = (my - menu_y) / menu_row_h;
+                }
             } else if (ev.type == SDL_MOUSEBUTTONDOWN && ev.button.button == SDL_BUTTON_LEFT) {
                 int mx = ev.button.x;
                 int my = ev.button.y;
-                if (btn_ble.contains(mx, my)) {
+                if (menu_open) {
+                    // The open list sits over the cards; it takes this click.
+                    menu_open = false;
+                    if (mx >= menu_x && mx < menu_x + menu_w && my >= menu_y &&
+                        my < menu_y + kPresetMenuRows * menu_row_h) {
+                        const int id = static_cast<int>(kPresetMenu[(my - menu_y) / menu_row_h]);
+                        int cur_id;
+                        {
+                            std::lock_guard<std::mutex> lk(state.mu);
+                            cur_id = state.preset_id;
+                        }
+                        std::string reply;
+                        if (id == cur_id && preset_pending < 0) {
+                            // Already on air.
+                        } else if (sendMeshControl("SET PRESET " + std::to_string(id), &reply) &&
+                                   reply.rfind("OK", 0) == 0) {
+                            preset_pending = id;
+                            preset_pending_since = std::chrono::steady_clock::now();
+                        } else {
+                            preset_note = "meshtasticd not reachable";
+                            preset_note_until = std::chrono::steady_clock::now() + std::chrono::seconds(4);
+                        }
+                    }
+                    continue;
+                }
+                if (btn_preset.contains(mx, my)) {
+                    menu_open = true;
+                } else if (btn_ble.contains(mx, my)) {
                     toggleBleBridge(state);
                 } else if (btn_range.contains(mx, my)) {
                     uint32_t cur = state.range_sec.load();
@@ -574,7 +669,9 @@ int main(int argc, char* argv[]) {
                     state.scroll_offset += 2;
                 }
             } else if (ev.type == SDL_KEYDOWN) {
-                if (ev.key.keysym.sym == SDLK_UP) {
+                if (ev.key.keysym.sym == SDLK_ESCAPE) {
+                    menu_open = false;
+                } else if (ev.key.keysym.sym == SDLK_UP) {
                     state.scroll_offset = std::max(0, state.scroll_offset - 1);
                 } else if (ev.key.keysym.sym == SDLK_DOWN) {
                     state.scroll_offset += 1;
@@ -607,10 +704,23 @@ int main(int argc, char* argv[]) {
 
         std::string cur_call;
         std::string cur_preset;
+        int cur_sf = 7;
+        int cur_preset_id = 0;
         {
             std::lock_guard<std::mutex> lk(state.mu);
             cur_call = state.callsign;
             cur_preset = state.preset;
+            cur_sf = state.preset_sf;
+            cur_preset_id = state.preset_id;
+        }
+        if (preset_pending >= 0 &&
+            (preset_pending == cur_preset_id ||
+             std::chrono::duration_cast<std::chrono::seconds>(now - preset_pending_since).count() > 30)) {
+            if (preset_pending != cur_preset_id) {
+                preset_note = "preset change not confirmed by PHY";
+                preset_note_until = now + std::chrono::seconds(6);
+            }
+            preset_pending = -1;
         }
         drawString(ren, 255, 16, "CALL:", kTextSecondary);
         drawString(ren, 300, 16, cur_call, kAccentBlue);
@@ -627,8 +737,22 @@ int main(int argc, char* argv[]) {
         drawString(ren, badge_x + 110, 16, "FREQ:", kTextSecondary);
         drawString(ren, badge_x + 155, 16, "5800 MHz", kAccentBlue);
 
+        fillRect(ren, btn_preset.x, btn_preset.y, btn_preset.w, btn_preset.h,
+                 (btn_preset.is_hovered || menu_open) ? kBtnHover : kCardBg);
+        drawRect(ren, btn_preset.x, btn_preset.y, btn_preset.w, btn_preset.h,
+                 preset_pending >= 0 ? kStatusAmber : kCardBorder);
         drawString(ren, badge_x + 235, 16, "PRESET:", kTextSecondary);
-        drawString(ren, badge_x + 295, 16, cur_preset, kTextPrimary);
+        if (preset_pending >= 0) {
+            phy::lora::MeshtasticPreset target = phy::lora::MeshtasticPreset::kShortTurbo;
+            phy::lora::meshtasticPresetFromId(static_cast<uint8_t>(preset_pending), target);
+            drawString(ren, badge_x + 295, 16, "> " + presetDisplayName(target), kStatusAmber);
+        } else {
+            drawString(ren, badge_x + 295, 16, cur_preset, kTextPrimary);
+        }
+        drawString(ren, btn_preset.x + btn_preset.w - 14, 16, "v", kTextSecondary);
+        if (!preset_note.empty() && now < preset_note_until) {
+            drawString(ren, btn_preset.x, 44, preset_note, kStatusRed);
+        }
 
         // Controls Area (Buttons)
         btn_ble.draw(ren, state.ble_active ? kStatusGreen : kTextSecondary,
@@ -684,9 +808,11 @@ int main(int argc, char* argv[]) {
             drawString(ren, 220, 165, buf, last_rec.is_echo ? kTextMuted : kTextPrimary);
 
             snprintf(buf, sizeof(buf), "SNR: %+5.1f dB", last_rec.snr_db);
-            drawString(ren, 345, 165, buf, snrColor(last_rec.snr_db, last_rec.is_echo));
+            drawString(ren, 345, 165, buf, snrColor(last_rec.snr_db, cur_sf, last_rec.is_echo));
 
-            snprintf(buf, sizeof(buf), "SIR: %+5.1f dB", last_rec.sir_db);
+            char sir_buf[16];
+            formatSir(sir_buf, sizeof(sir_buf), last_rec.sir_db);
+            snprintf(buf, sizeof(buf), "SIR: %s dB", sir_buf);
             drawString(ren, 490, 165, buf, sirColor(last_rec.sir_db, last_rec.is_echo));
 
             snprintf(buf, sizeof(buf), "LVL: %+5.1f dBFS", last_rec.lvl_dbfs);
@@ -741,7 +867,7 @@ int main(int argc, char* argv[]) {
                 Color time_c = p.is_echo ? kTextMuted : kTextSecondary;
                 Color from_c = p.is_echo ? kTextMuted : kTextPrimary;
                 Color to_c   = p.is_echo ? kTextMuted : kTextSecondary;
-                Color snr_c  = snrColor(p.snr_db, p.is_echo);
+                Color snr_c  = snrColor(p.snr_db, cur_sf, p.is_echo);
                 Color sir_c  = sirColor(p.sir_db, p.is_echo);
                 Color lvl_c  = p.is_echo ? kTextMuted : kTextPrimary;
                 Color cfo_c  = p.is_echo ? kTextMuted : kTextPrimary;
@@ -762,7 +888,7 @@ int main(int argc, char* argv[]) {
                 snprintf(buf, sizeof(buf), "%+5.1f", p.snr_db);
                 drawString(ren, 330, y_row, buf, snr_c);
 
-                snprintf(buf, sizeof(buf), "%+5.1f", p.sir_db);
+                formatSir(buf, sizeof(buf), p.sir_db);
                 drawString(ren, 412, y_row, buf, sir_c);
 
                 snprintf(buf, sizeof(buf), "%+5.1f", p.lvl_dbfs);
@@ -781,6 +907,21 @@ int main(int argc, char* argv[]) {
                 drawString(ren, 838, y_row, buf, id_c);
 
                 y_row += 20;
+            }
+        }
+
+        if (menu_open) {
+            const int menu_h = kPresetMenuRows * menu_row_h;
+            fillRect(ren, menu_x, menu_y, menu_w, menu_h, kCardBg);
+            drawRect(ren, menu_x, menu_y, menu_w, menu_h, kCardBorder);
+            for (int i = 0; i < kPresetMenuRows; ++i) {
+                const int ry = menu_y + i * menu_row_h;
+                const bool on_air = static_cast<int>(kPresetMenu[i]) == cur_preset_id;
+                if (i == menu_hover) {
+                    fillRect(ren, menu_x + 1, ry, menu_w - 2, menu_row_h, kBtnHover);
+                }
+                drawString(ren, menu_x + 8, ry + 3, presetMenuLabel(kPresetMenu[i]),
+                           on_air ? kAccentBlue : kTextPrimary);
             }
         }
 

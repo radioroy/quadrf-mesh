@@ -22,6 +22,7 @@
 #include <SoapySDR/Constants.h>
 #include <SoapySDR/Errors.hpp>
 
+#include <atomic>
 #include <chrono>
 #include <cmath>
 #include <cstdio>
@@ -42,8 +43,9 @@ void usage(const char* prog) {
               << "  --freq <mhz>           On-air center (default: 5800)\n"
               << "  --tx-gain <db>         MAX2850 gain (default: 0)\n"
               << "  --amplitude <a>        Baseband amplitude (default: 0.7)\n"
-              << "  --preset <name>        shortturbo|shortfast (default: shortturbo)\n"
-              << "  --gap <syms>           Silence between frames (default: 64)\n"
+              << "  --preset <name>        Meshtastic preset key, shortturbo .. verylongslow,\n"
+              << "                         longturbo (default: shortturbo)\n"
+              << "  --gap <syms>           Silence between frames, preset symbols (default: 64)\n"
               << "  --warmup <syms>        DC carrier before each frame (default: 2)\n"
               << "  --tx-rate <hz>         Host TX rate (default: 1e6)\n"
               << "  --tx-lo-offset-khz <k> TX LO below channel + digital upshift (default: 0)\n"
@@ -145,15 +147,29 @@ int main(int argc, char** argv) {
         pushChunk();
         rf.paUnmute();
         std::this_thread::sleep_for(std::chrono::milliseconds(2));
-        size_t queued = 0;
+        // Encoding and modulating a frame takes tens of ms at SF11/12; done
+        // inline it starves the TX ring and the air sees a ~1 ms hole.
+        std::atomic<size_t> queued{0};
+        std::atomic<bool> stop{false};
+        std::thread producer([&]() {
+            while (!stop && queued < count) {
+                if (tx.queued() < 2) {
+                    tx.enqueue(beaconPayload(static_cast<uint16_t>(start_seq + queued)));
+                    ++queued;
+                } else {
+                    std::this_thread::sleep_for(std::chrono::milliseconds(2));
+                }
+            }
+        });
+        while (tx.queued() == 0 && queued < count) {
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        }
         const auto t0 = std::chrono::steady_clock::now();
         while (queued < count || !tx.isIdle()) {
-            while (queued < count && tx.queued() < 4) {
-                tx.enqueue(beaconPayload(static_cast<uint16_t>(start_seq + queued)));
-                ++queued;
-            }
             if (!pushChunk()) break;
         }
+        stop = true;
+        producer.join();
         // two chunks of silence drain the driver ring before PA mute
         pushChunk();
         pushChunk();

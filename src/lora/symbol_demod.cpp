@@ -135,6 +135,93 @@ ChipPeak SymbolDemod::peakOf(const std::vector<double>& folded) const {
     return result;
 }
 
+FrameMetrics decisionAidedMetrics(const float* rows, size_t n_rows, uint32_t n_chips,
+                                  const std::vector<uint16_t>& values) {
+    FrameMetrics fm;
+    const size_t k_syms = std::min(n_rows, values.size());
+    if (k_syms == 0 || n_chips < 32) {
+        return fm;
+    }
+    const auto n = static_cast<int32_t>(n_chips);
+    auto at = [&](const float* r, int32_t u) {
+        const double m = r[((u % n) + n) % n];
+        return m * m;
+    };
+    auto lobe = [&](const float* r, int32_t c) {
+        double s = 0.0;
+        for (int32_t d = -2; d <= 2; ++d) s += at(r, c + d);
+        return s;
+    };
+    double s_acc = 0.0, n_acc = 0.0, i_acc = 0.0;
+    for (size_t k = 0; k < k_syms; ++k) {
+        const float* r = rows + k * n_chips;
+        // A +-1 chip lattice slip that the CRC search corrected leaves the
+        // stored row one bin off the sent value; take the strongest of the three.
+        int32_t c = values[k];
+        double best = -1.0;
+        for (int32_t d = -1; d <= 1; ++d) {
+            const double l = lobe(r, values[k] + d);
+            if (l > best) {
+                best = l;
+                c = values[k] + d;
+            }
+        }
+        auto apart = [&](int32_t u, int32_t v) {
+            int32_t dist = std::abs(((u % n) + n) % n - ((v % n) + n) % n);
+            return std::min(dist, n - dist) > 4;
+        };
+        double tot = 0.0;
+        double m2 = -1.0;
+        int32_t c2 = c;
+        for (int32_t u = 0; u < n; ++u) {
+            const double p = at(r, u);
+            tot += p;
+            if (apart(u, c) && p > m2) {
+                m2 = p;
+                c2 = u;
+            }
+        }
+        // An unsynchronised co-SF interferer straddles our window, so its
+        // energy lands in two partial tones (fractions a and 1-a of the
+        // symbol); count the runner-up lobe as well.
+        double m3 = -1.0;
+        int32_t c3 = c;
+        for (int32_t u = 0; u < n; ++u) {
+            const double p = at(r, u);
+            if (apart(u, c) && apart(u, c2) && p > m3) {
+                m3 = p;
+                c3 = u;
+            }
+        }
+        const double nm = (tot - best) / static_cast<double>(n - 5);
+        s_acc += best - 5.0 * nm;
+        n_acc += nm;
+        i_acc += lobe(r, c2) + lobe(r, c3) - 10.0 * nm;
+    }
+    const double kk = static_cast<double>(k_syms);
+    const double s_mean = s_acc / kk;
+    const double n_mean = n_acc / kk;
+    if (n_mean <= 0.0) {
+        fm.snr_db = 40.0;
+        return fm;
+    }
+    fm.snr_db = (s_mean > 0.0)
+                    ? 10.0 * std::log10(s_mean / (n_mean * static_cast<double>(n_chips)))
+                    : -30.0;
+    // Noise alone: the largest of m = N - 9 exponential bins averages
+    // n * H_m and the runner-up n * (H_m - 1), neighbours n each, so the two
+    // lobes less 10n average n * (2 H_m - 3). Spread per symbol is about
+    // n * sqrt(pi^2/6 + (pi^2/6 - 1) + 8).
+    const double m = static_cast<double>(n_chips - 9);
+    const double h_m = std::log(m) + 0.5772156649 + 1.0 / (2.0 * m);
+    const double excess = i_acc / kk - n_mean * (2.0 * h_m - 3.0);
+    const double sigma = n_mean * std::sqrt(M_PI * M_PI / 3.0 + 7.0) / std::sqrt(kk);
+    if (s_mean > 0.0 && excess > 3.0 * sigma) {
+        fm.sir_db = std::min(kSirCeilingDb, 10.0 * std::log10(s_mean / excess));
+    }
+    return fm;
+}
+
 double preambleSlope(SymbolDemod& sym, const Sample* buf, size_t len, size_t start,
                      uint16_t preamble_len, std::vector<double>* traj_out,
                      std::vector<double>* mags_out) {

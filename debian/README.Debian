@@ -50,11 +50,25 @@ that, so the RX LO cannot reach the channel (deaf receiver, or nothing below
 means the VCO is at a rail and the LO is not locked.
 
 Meshtastic `lora.override_frequency` is kept at 0 and does not tune the
-radio. `lora.modem_preset` is sent to PHY (Short Turbo or Short Fast):
+radio. `lora.modem_preset` is sent to PHY over Air-IPC SetModem:
 
-  Preset mapping:
-    shortturbo     SHORT_TURBO (default)
-    shortfast      SHORT_FAST
+  Preset mapping (PHY key, Meshtastic name, BW / SF / CR):
+    shortturbo     SHORT_TURBO (default)   500 kHz  SF7   4/5
+    shortfast      SHORT_FAST              250 kHz  SF7   4/5
+    shortslow      SHORT_SLOW              250 kHz  SF8   4/5
+    mediumfast     MEDIUM_FAST             250 kHz  SF9   4/5
+    mediumslow     MEDIUM_SLOW             250 kHz  SF10  4/5
+    longfast       LONG_FAST               250 kHz  SF11  4/5
+    longmoderate   LONG_MODERATE           125 kHz  SF11  4/8
+    longslow       LONG_SLOW               125 kHz  SF12  4/8
+    verylongslow   VERY_LONG_SLOW         62.5 kHz  SF12  4/8
+    longturbo      LONG_TURBO              500 kHz  SF11  4/8
+
+  VERY_LONG_SLOW is deprecated upstream; the QuadRF backend keeps the
+  62.5 kHz definition. LITE_*/NARROW_* revert to SHORT_TURBO. A
+  lora.coding_rate override on a preset is cleared; the preset CR is used.
+  LONG_SLOW and VERY_LONG_SLOW decode headers but not payloads between two
+  QuadRFs (inter-unit LO wander); see README.md.
 
   meshtastic --host 127.0.0.1:4403 --set lora.modem_preset SHORT_TURBO
 

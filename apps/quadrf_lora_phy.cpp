@@ -15,6 +15,7 @@
 #include <quadrf/air_ipc.hpp>
 #include <phy/lora/presets.hpp>
 #include <phy/lora/receiver.hpp>
+#include <phy/lora/rx_chain.hpp>
 #include <phy/lora/transmitter.hpp>
 #include <phy/mesh/packet.hpp>
 #include <phy/radio/radio_session.hpp>
@@ -83,9 +84,12 @@ void usage(const char* prog) {
         << "  --tx-ant <mask>        TX antenna bitmask (default: 1)\n"
         << "  --rx-ant <mask>        RX antenna bitmask (default: 1)\n"
         << "  --amplitude <a>        TX amplitude 0..1 (default: 0.8 digital, 0.7 ota)\n"
-        << "  --warmup <syms>        Carrier before each frame (default: 0 / 2 ota)\n"
-        << "  --gap <syms>           Silence between frames (default: 64)\n"
-        << "  --preset <name>        Meshtastic preset: shortturbo (default), shortfast\n"
+        << "  --warmup <syms>        Carrier before each frame, in Short Turbo symbols (256 us;\n"
+        << "                         scaled to the active preset; default: 0 / 2 ota)\n"
+        << "  --gap <syms>           Silence after each frame, in Short Turbo symbols (default: 64)\n"
+        << "  --preset <name>        Meshtastic preset: shortturbo (default), shortfast, shortslow,\n"
+        << "                         mediumfast, mediumslow, longfast, longmoderate, longslow,\n"
+        << "                         verylongslow, longturbo\n"
         << "  --rx-only              OTA receive only (tx off; for uni peer RX)\n"
         << "  --pa-drain-ms <ms>     Extra idle after post-idle TX write (default: 0; env QUADRF_LORA_PHY_PA_DRAIN_MS)\n"
         << "  --rx-rate <hz>         Host RX rate, even multiple of the modem rate (OTA default: 8e6;\n"
@@ -106,14 +110,18 @@ bool parsePreset(const std::string& name, LoraParams& out) {
 }
 
 const char* presetKeyFromId(uint8_t id) {
-    switch (id) {
-        case kPresetShortTurbo:
-            return "shortturbo";
-        case kPresetShortFast:
-            return "shortfast";
-        default:
-            return nullptr;
-    }
+    MeshtasticPreset preset;
+    return meshtasticPresetFromId(id, preset) ? meshtasticPresetKey(preset) : nullptr;
+}
+
+// --warmup / --gap are Short Turbo symbols (256 us); keep the same wall time
+// at other presets. A 64-symbol gap is 16 ms at SF7/500k but 4.2 s at
+// SF12/62.5k, with the PA unmuted and RX ducked the whole time.
+uint32_t scaledSymbols(int st_syms, const LoraParams& p, bool round_up) {
+    constexpr double kShortTurboSym = 128.0 / 500e3;
+    const double t_sym = static_cast<double>(1u << p.spreading_factor) / p.bandwidth_hz;
+    const double n = static_cast<double>(std::max(st_syms, 0)) * kShortTurboSym / t_sym;
+    return static_cast<uint32_t>(round_up ? std::ceil(n - 1e-9) : std::lround(n));
 }
 
 template <typename T, typename... Args>
@@ -460,27 +468,27 @@ int main(int argc, char** argv) {
         rx_rate_hz = params.sample_rate_hz;
     }
     if (!ota) {
-        // Digital loopback has no LO; keep host RX at the modem rate.
+        // Digital loopback has no LO; keep host RX at the TX host rate.
         rx_rate_hz = params.sample_rate_hz;
         rx_if_khz = 0.0;
     }
-    auto makeDdc = [&](const LoraParams& p) {
-        // Channel filter edges track the LoRa BW: flat to 0.54 BW, stopband
-        // from 0.66 BW (500 kHz: 270 / 330 kHz). Above that, out-of-band noise
-        // lands in the receiver's oversampled dechirp FFT.
-        Ddc::Config c;
-        c.fs_in = rx_rate_hz;
-        c.fs_out = p.sample_rate_hz;
-        c.f_if = rx_if_khz * 1e3;
-        c.pass_hz = 0.54 * p.bandwidth_hz;
-        c.stop_hz = 0.66 * p.bandwidth_hz;
-        return Ddc(c);
+    // TX modulates at the host rate (params.sample_rate_hz). RX runs at
+    // 2 x BW behind the DDC (rxChannelFilter), whatever the preset, and
+    // reports SNR against BW using the DDC's noise bandwidth.
+    auto makeDdc = [&](const LoraParams& tx_p, LoraParams& rx_p) {
+        rx_p = tx_p;
+        rx_p.sample_rate_hz = meshtasticRxRate(tx_p);
+        Ddc d(rxChannelFilter(rx_p, rx_rate_hz, rx_if_khz * 1e3));
+        rx_p.rx_noise_bw_hz = d.noiseBandwidthHz();
+        return d;
     };
     Ddc ddc;
+    LoraParams rx_params;
     try {
-        ddc = makeDdc(params);
+        ddc = makeDdc(params, rx_params);
     } catch (const std::exception& e) {
-        std::cerr << "bad --rx-rate / --rx-if-khz: " << e.what() << "\n";
+        std::cerr << "bad --rx-rate / --rx-if-khz for preset " << preset_name << ": " << e.what()
+                  << "\n";
         return 1;
     }
 
@@ -633,7 +641,8 @@ int main(int argc, char** argv) {
             std::cerr << "quadrf-lora-phy: RX host=" << rx_rate_hz / 1e6 << " Msps, IF="
                       << rx_if_khz << " kHz (LO " << rx_lo_mhz << " MHz), ddc="
                       << (ddc.passthrough() ? "off" : "on") << " taps=" << ddc.stage1Taps()
-                      << "+" << ddc.stage2Taps() << "\n";
+                      << "+" << ddc.stage2Taps() << " -> " << rx_params.sample_rate_hz / 1e3
+                      << " ksps, noise bw " << ddc.noiseBandwidthHz() / 1e3 << " kHz\n";
         } else {
             if (rx_only) {
                 std::cerr << "--rx-only requires --ota\n";
@@ -650,9 +659,9 @@ int main(int argc, char** argv) {
         const size_t mtu = streams.mtu();
 
         Transmitter tx(params, amplitude);
-        tx.setWarmupSymbols(static_cast<uint32_t>(warmup_syms));
-        tx.setGapSymbols(static_cast<uint32_t>(gap_syms));
-        Receiver receiver(params);
+        tx.setWarmupSymbols(scaledSymbols(warmup_syms, params, false));
+        tx.setGapSymbols(scaledSymbols(gap_syms, params, true));
+        Receiver receiver(rx_params);
 
         std::mutex modem_mu;
         std::mutex tx_mu;
@@ -1157,17 +1166,31 @@ int main(int argc, char** argv) {
             std::lock_guard<std::mutex> modem_lk(modem_mu);
             std::lock_guard<std::mutex> tx_lk(tx_mu);
             tx.clearQueue();
+            LoraParams rx_next;
+            Ddc ddc_next;
+            try {
+                ddc_next = makeDdc(next, rx_next);
+            } catch (const std::exception& e) {
+                std::cerr << "ipc: SetModem " << name << " needs a DDC this RX rate can't build ("
+                          << e.what() << "); keeping " << preset_name << "\n";
+                broadcastModemStatus();
+                return;
+            }
             reconstruct(tx, next, amplitude);
-            tx.setWarmupSymbols(static_cast<uint32_t>(warmup_syms));
-            tx.setGapSymbols(static_cast<uint32_t>(gap_syms));
+            tx.setWarmupSymbols(scaledSymbols(warmup_syms, next, false));
+            tx.setGapSymbols(scaledSymbols(gap_syms, next, true));
             queue.flush();
-            ddc = makeDdc(next);
-            reconstruct(receiver, next);
+            ddc = std::move(ddc_next);
+            reconstruct(receiver, rx_next);
             params = next;
+            rx_params = rx_next;
             preset_name = name;
             std::cerr << "ipc: modem preset=" << preset_name
                       << " bw=" << params.bandwidth_hz / 1e3 << " kHz sf="
-                      << static_cast<int>(params.spreading_factor) << "\n";
+                      << static_cast<int>(params.spreading_factor) << " cr=4/"
+                      << static_cast<int>(params.cr) + 4 << (params.ldro ? " ldro" : "")
+                      << ", rx " << rx_params.sample_rate_hz / 1e3 << " ksps, ddc taps "
+                      << ddc.stage1Taps() << "+" << ddc.stage2Taps() << "\n";
             broadcastModemStatus();
         };
 

@@ -99,9 +99,15 @@ ProcessMessage QuadRFParrotModule::handleReceived(const meshtastic_MeshPacket &m
     char prefix[160];
     if (has_metrics) {
         float cfo_khz = static_cast<float>(metrics.cfo_hz) / 1000.0f;
+        // 30 dB is the PHY's "no second tone found" ceiling.
+        char sir[16];
+        if (metrics.sir_db >= 29.95f)
+            std::snprintf(sir, sizeof(sir), ">30");
+        else
+            std::snprintf(sir, sizeof(sir), "%+.1f", metrics.sir_db);
         std::snprintf(prefix, sizeof(prefix),
-                      "[P: DE %s snr=%+.1fdB sir=%+.1fdB lvl=%+.1fdBFS cfo=%+.1fkHz ppm=%+.1f] ",
-                      callsign.c_str(), metrics.snr_db, metrics.sir_db, metrics.lvl_dbfs,
+                      "[P: DE %s snr=%+.1fdB sir=%sdB lvl=%+.1fdBFS cfo=%+.1fkHz ppm=%+.1f] ",
+                      callsign.c_str(), metrics.snr_db, sir, metrics.lvl_dbfs,
                       cfo_khz, metrics.rate_ppm);
     } else {
         std::snprintf(prefix, sizeof(prefix), "[P: DE %s snr=%+.1fdB] ",

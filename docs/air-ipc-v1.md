@@ -46,12 +46,12 @@ Sent from `quadrf-lora-phy` to the mesh daemon when a frame is received.
 
 | Offset | Size | Field | Description |
 | ---: | ---: | --- | --- |
-| 0 | 2 | SNR | int16, signed SNR in hundredths of a dB (e.g. `1250` = +12.50 dB) |
+| 0 | 2 | SNR | int16, channel SNR in the LoRa bandwidth, hundredths of a dB (e.g. `1250` = +12.50 dB) |
 | 2 | 2 | RSSI | int16, signed RSSI in dBm |
 | 4 | 4 | CFO | int32, signed carrier frequency offset in Hz |
 | 8 | 4 | Rate PPM | int32, signed sample-rate offset in hundredths of a ppm (e.g. `150` = +1.50 ppm) |
 | 12 | 8 | Center frequency | uint64, PHY channel in Hz (startup `--freq`, then the last GUI retune PHY followed) |
-| 20 | 2 | SIR | int16, worst-symbol second-tone ratio in hundredths of a dB |
+| 20 | 2 | SIR | int16, wanted tone over noise-corrected second tone in hundredths of a dB; `3000` (30 dB) = no interferer detected |
 | 22 | 2 | LVL | int16, uncalibrated signal level in hundredths of a dBFS |
 | 24 | 16..255 | Payload | Meshtastic air-frame bytes |
 
@@ -61,6 +61,19 @@ Sent from `quadrf-meshtasticd` when Meshtastic applies a modem preset (`QuadRFRa
 
 | Offset | Size | Field | Description |
 | ---: | ---: | --- | --- |
-| 0 | 1 | Preset | `0` = Short Turbo (500 kHz / SF7), `1` = Short Fast (250 kHz / SF7) |
+| 0 | 1 | Preset | `0` ST, `1` SF, `2` SS, `3` MF, `4` MS, `5` LF, `6` LM, `7` LS, `8` VLS, `9` LT |
 
-Only presets `0` and `1` are supported. Any unsupported preset reverts to Short Turbo. PHY reconstructs the TX modulator and RX demodulator without altering the LO frequency.
+| Id | Preset | BW (kHz) | SF | CR |
+| ---: | --- | ---: | ---: | --- |
+| 0 | Short Turbo | 500 | 7 | 4/5 |
+| 1 | Short Fast | 250 | 7 | 4/5 |
+| 2 | Short Slow | 250 | 8 | 4/5 |
+| 3 | Medium Fast | 250 | 9 | 4/5 |
+| 4 | Medium Slow | 250 | 10 | 4/5 |
+| 5 | Long Fast | 250 | 11 | 4/5 |
+| 6 | Long Moderate | 125 | 11 | 4/8 |
+| 7 | Long Slow | 125 | 12 | 4/8 |
+| 8 | Very Long Slow | 62.5 | 12 | 4/8 |
+| 9 | Long Turbo | 500 | 11 | 4/8 |
+
+Ids are append-only. PHY ignores unknown ids and keeps the current preset; the backend reverts unsupported Meshtastic presets to Short Turbo before sending. PHY reconstructs the TX modulator, the RX DDC (output rate 2·BW) and demodulator without altering the LO frequency.

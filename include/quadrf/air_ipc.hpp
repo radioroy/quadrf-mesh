@@ -19,7 +19,9 @@
 //               | rate_ppm_centi (i32) | frequency_hz (u64)
 //               | sir_centidb (i16) | lvl_centi_dbfs (i16)
 //               | Meshtastic air frame (16..255 bytes)
-//   SetModem:   preset (u8): 0=shortturbo, 1=shortfast. Rebuilds TX/RX DSP.
+//   SetModem:   preset (u8): 0 shortturbo, 1 shortfast, 2 shortslow,
+//               3 mediumfast, 4 mediumslow, 5 longfast, 6 longmoderate,
+//               7 longslow, 8 verylongslow, 9 longturbo. Rebuilds TX/RX DSP.
 
 #include <cstddef>
 #include <cstdint>
@@ -56,8 +58,18 @@ inline constexpr bool messageTypeKnown(uint8_t type) {
            type == static_cast<uint8_t>(MsgType::kSetModem);
 }
 
+// SetModem preset ids; same numbering as phy::lora::MeshtasticPreset.
+// Append only: both ends ship from this header but upgrade separately.
 inline constexpr uint8_t kPresetShortTurbo = 0;
 inline constexpr uint8_t kPresetShortFast = 1;
+inline constexpr uint8_t kPresetShortSlow = 2;
+inline constexpr uint8_t kPresetMediumFast = 3;
+inline constexpr uint8_t kPresetMediumSlow = 4;
+inline constexpr uint8_t kPresetLongFast = 5;
+inline constexpr uint8_t kPresetLongModerate = 6;
+inline constexpr uint8_t kPresetLongSlow = 7;
+inline constexpr uint8_t kPresetVeryLongSlow = 8;
+inline constexpr uint8_t kPresetLongTurbo = 9;
 
 struct TxEnqueue {
     // Informational. QuadRFRadio always sends 0; PHY never retunes from it.

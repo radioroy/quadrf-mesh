@@ -3,8 +3,10 @@
 #include <phy/lora/coding.hpp>
 #include <phy/lora/params.hpp>
 #include <phy/lora/symbol_demod.hpp>
+#include <phy/lora/wander.hpp>
 #include <phy/types.hpp>
 
+#include <array>
 #include <cstdint>
 #include <deque>
 #include <vector>
@@ -19,8 +21,11 @@ struct ReceivedFrame {
     double cfo_chips = 0.0;    // carrier offset, one chip = bw / 2^sf Hz
     double cfo_hz = 0.0;
     double tau_samples = 0.0;  // fine timing offset solved from up/down peaks
-    double snr_db = 0.0;       // mean channel SNR over data symbols (PG removed)
-    double sir_db = 0.0;       // worst-symbol 10*log10(lobe/mag2)
+    // S / (N0 * BW), dB. CRC-passing frames: decision-aided at the sent
+    // values (decisionAidedMetrics); others: mean per-symbol channelSnrDb.
+    // Both corrected for the front-end noise bandwidth (rx_noise_bw_hz).
+    double snr_db = 0.0;
+    double sir_db = kSirCeilingDb;  // signal vs strongest other tone; CRC-passing frames only
     double lvl_dbfs = 0.0;     // mean folded power, dBFS (not dBm)
     double sync_err0 = 0.0;
     double sync_err1 = 0.0;
@@ -81,6 +86,16 @@ private:
     bool stepSearch();
     bool stepSync();
     bool stepData();
+    // Wander-mode replacement for the per-symbol body of stepData; win_
+    // holds the resampled window.
+    void trackSymbol(double step);
+    // Parse the header once 8 symbols are in; false = invalid header.
+    bool checkHeader();
+    // Frame-end search over cumulative +-1 chip slips (+-4 on reduced-rate
+    // symbols) against a Kalman carrier model; fills offset paths, best first.
+    void slipSearch(std::vector<std::vector<int>>& paths) const;
+    void smoothSymbol(size_t idx, double ref_pred, double slope_pred, double d);
+    void derotateTrack(Sample* window) const;
     void finalizeData();
     void resetToSearch(size_t scan_from_abs);
     void trimFront(size_t keep_from_abs);
@@ -93,6 +108,7 @@ private:
     uint32_t sps_ = 0;
     uint32_t n_chips_ = 0;
     uint32_t os_ = 0;
+    double sf_gain_db_ = 0.0;  // processing gain over SF7, for the SNR gates
 
     // raw sample buffer; buf_[0] is absolute stream index base_
     std::vector<Sample> buf_;
@@ -137,8 +153,51 @@ private:
     // and the matching sum of |seg1||seg2| (coherence = |acc| / mag).
     std::complex<double> fold_acc_{0.0, 0.0};
     double fold_mag_ = 0.0;
+
+    // Carrier tracking under crystal wander (LoraParams::wander_*). ref_ is
+    // then the predicted carrier at the next symbol start, trk_slope_ its
+    // predicted change across the symbol, trk_var_ the variance of ref_.
+    bool wander_ = false;
+    double sigma_w_ = 0.0;      // expected carrier change per symbol, chips
+    uint32_t n_sub_max_ = 4;    // sub-blocks per symbol at high SNR
+    double trk_beta_ = 0.0;     // slope carried into the next symbol
+    double joint_frac_ = 1.0;   // boundary taper width, symbols
+    // Data-carrier Kalman: absolute carrier (chips) and its rate (chips per
+    // symbol) at kf_t_ (symbols from data start); p = {P00, P01, P11}.
+    bool kf_on_ = false;
+    double kf_q_ = 0.0;
+    double kf_x_[2] = {0.0, 0.0};
+    double kf_p_[3] = {0.0, 0.0, 0.0};
+    double kf_t_ = 0.0;
+    double kf_ref0_ = 0.0;  // carrier at data start
+    std::vector<double> trk_t_, trk_e_;  // smoothed in-symbol carrier vs the derotation ramp
+    std::vector<std::array<double, 2>> sm_x_, sm_xp_;
+    std::vector<std::array<double, 3>> sm_p_, sm_pp_;
+    std::vector<double> sm_dt_;
+    double step_tol_ = 0.0;     // SEARCH / preamble peak-step bound, chips
+    double sync_tol_ = 0.0;     // sync-word / calibration residual bound, chips
+    double trk_slope_ = 0.0;
+    double trk_var_ = 0.0;
+    WanderFit wfit_;
+    IQBuffer dech_;
+    // Previous symbol's carrier observations at its decided value:
+    // {symbol time t, carrier in chips, weight}.
+    std::vector<std::array<double, 3>> prev_obs_;
+    std::vector<double> joint_a_, joint_y_, joint_w_;
+    struct SlipSym {
+        uint32_t obs0, obs1;  // range in slip_obs_
+        bool reduced;
+    };
+    std::vector<SlipSym> slip_syms_;
+    std::vector<std::array<double, 3>> slip_obs_;  // t (symbols from data start), carrier (chips), weight
+    // Sub-blocks for one window: as many as the wander needs, as few as
+    // keep ~6 dB SNR per block.
+    uint32_t subBlocks(const ChipPeak& pk) const;
+    // Fit the carrier trajectory of the tone at unfolded bin b1 in window w
+    // (down: SFD window, dechirped by the up-chirp). wrap: see WanderFit::fit.
+    bool fitWindow(const Sample* w, bool down, int32_t b1, int32_t wrap, const ChipPeak& pk);
+    void derotateRamp(Sample* w, double f0, double slope) const;
     double snr_acc_ = 0.0;
-    double sir_min_ = 0.0;
     double pwr_acc_ = 0.0;
     size_t metric_n_ = 0;
     ReceivedFrame cur_;

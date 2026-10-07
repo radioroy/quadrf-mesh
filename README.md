@@ -75,16 +75,32 @@ sudo systemctl start quadrf-lora-phy quadrf-meshtasticd
 
 ### Modem Presets and Frequency
 
-Only two modem presets are supported:
+All Meshtastic modem presets from Short Turbo through Very Long Slow are supported (sync word 0x2B, 16-symbol preamble, explicit header, CRC, LDRO at symbol times of 16.4 ms or more):
 
-- **Short Turbo** (`SHORT_TURBO`): 500 kHz bandwidth, SF7 (default).
-- **Short Fast** (`SHORT_FAST`): 250 kHz bandwidth, SF7.
+| Meshtastic `modem_preset` | PHY key | BW (kHz) | SF | CR | Air-IPC id |
+| --- | --- | ---: | ---: | --- | ---: |
+| `SHORT_TURBO` (default) | `shortturbo` | 500 | 7 | 4/5 | 0 |
+| `SHORT_FAST` | `shortfast` | 250 | 7 | 4/5 | 1 |
+| `SHORT_SLOW` | `shortslow` | 250 | 8 | 4/5 | 2 |
+| `MEDIUM_FAST` | `mediumfast` | 250 | 9 | 4/5 | 3 |
+| `MEDIUM_SLOW` | `mediumslow` | 250 | 10 | 4/5 | 4 |
+| `LONG_FAST` | `longfast` | 250 | 11 | 4/5 | 5 |
+| `LONG_MODERATE` | `longmoderate` | 125 | 11 | 4/8 | 6 |
+| `LONG_SLOW` | `longslow` | 125 | 12 | 4/8 | 7 |
+| `VERY_LONG_SLOW` | `verylongslow` | 62.5 | 12 | 4/8 | 8 |
+| `LONG_TURBO` | `longturbo` | 500 | 11 | 4/8 | 9 |
 
-Other presets selected in Meshtastic are unsupported and revert to Short Turbo. Presets can be set via CLI:
+`VERY_LONG_SLOW` is deprecated in Meshtastic 2.5+ and the pinned firmware maps it to Long Fast airtime; the QuadRF backend restores its last definition (62.5 kHz / SF12 / CR 4/8) so both ends agree. Its ±20 kHz CFO acquisition range is about one third of the bandwidth. Expect several seconds of airtime per text. LITE_* and NARROW_* presets, and custom modem settings that do not match a row above, revert to Short Turbo. A `lora.coding_rate` override on top of a preset is cleared (clients write back the CR 4/5 of the previous preset when switching to a CR 4/8 one) and the preset's own CR is used. Presets change live over Air-IPC `SetModem`, for example:
 
 ```bash
-meshtastic --host 127.0.0.1:4403 --set lora.modem_preset SHORT_FAST
+meshtastic --host 127.0.0.1:4403 --set lora.modem_preset LONG_FAST
 ```
+
+The `PRESET:` badge in Mesh Monitor does the same from the desktop: it saves the preset in meshtasticd, which applies it and restarts so the web and phone clients reconnect with the new setting. Each node is switched on its own; set every node in the mesh to the same preset.
+
+The RATE (ppm) value reported with each frame is the receiver's timing-loop sample-clock correction, not a clock-offset measurement: preamble drift on the short presets is dominated by LO wander, and the long presets do not estimate it (0). QuadRF-to-QuadRF offsets measured from captures are about −7 to −14 ppm.
+
+Measured between two QuadRFs at 5.8 GHz, TX gain 0, both directions: Short Turbo through Long Fast and Long Turbo deliver 85 to 100 % of beacon frames and nearly every mesh text; Long Moderate about 60 to 100 %. Long Slow and Very Long Slow acquire and decode the header but the payload CRC fails. The two units' LOs wander against each other by about 800 Hz RMS (swings of ±1 kHz over 10 to 30 ms), which is tens of chips within one SF12 symbol. The receiver tracks it across symbol boundaries; with the transmitted symbols known, the boundary carrier step can only be estimated to about 0.85 chip RMS at 15 dB, roughly 3 % of symbols outside the ±2-chip LDRO decision window, and the tracker still has heavier tails than that. A shared reference or a quieter LO is the fix for SF12 at 125 kHz and below.
 
 `quadrf-lora-phy` owns the radio hardware. Startup RF (frequency, gain, bandwidth, antenna mask, preset) is set in `/etc/default/quadrf-lora-phy`; restart `quadrf-lora-phy` (and `quadrf-meshtasticd`) after edits. Live retuning is done with the QuadRF appliance GUI Tx or Rx frequency slider: PHY follows the move within a second, keeping TX on the channel and the RX LO 500 kHz below it (low-IF receive, `QUADRF_LORA_PHY_RX_IF_KHZ`). The GUI TX/RX Ch: checkboxes and 4-channel (interleaved) RX mode also override the packaged `--tx-ant 1 --rx-ant 1` until PHY is restarted. Meshtastic `lora.override_frequency` must remain `0` (it does not tune the radio).
 
@@ -118,7 +134,7 @@ This project is licensed under the GNU General Public License v3.0 (GPL-3.0). Se
 
 - Soft-decision Hamming decoding
 - Low-SNR fractional CFO/STO estimators (Bernier / Yang-Wei)
-- Remaining Meshtastic modem presets (SF 8-12)
+- Post-sync channel filter centred on the measured CFO for the 62.5/125 kHz presets
 
 
 

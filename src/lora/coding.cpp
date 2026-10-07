@@ -317,7 +317,7 @@ DecodeResult decodeFrame(const LoraParams& p, const std::vector<uint16_t>& raw_v
         for (int i = 0; i < cw_len; ++i) {
             uint32_t v = (raw_values[sym_idx + i] + n_chips - 1) % n_chips;
             if (reduced) {
-                v >>= 2;
+                v = reducedValue(raw_values[sym_idx + i], n_chips);
             }
             block_syms[i] = static_cast<uint16_t>(grayEncode(v));
         }
@@ -432,7 +432,7 @@ void symbolLlrs(const float* row, uint8_t sf, bool reduced, double tone_amp, dou
         const double e = std::exp(metric[u] - mmax);
         uint32_t v = (u + n - 1) % n;
         if (reduced) {
-            v >>= 2;
+            v = reducedValue(u, n);
         }
         const uint32_t g = grayEncode(v);
         for (int j = 0; j < sf_app; ++j) {

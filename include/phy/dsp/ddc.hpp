@@ -63,10 +63,15 @@ public:
     bool passthrough() const { return passthrough_; }
     size_t stage1Taps() const { return st1_.taps(); }
     size_t stage2Taps() const { return st2_.taps(); }
+    // Equivalent noise bandwidth of the whole chain, Hz: output noise power
+    // is N0 * noiseBandwidthHz() for white input of density N0. Passthrough
+    // reports fs_in.
+    double noiseBandwidthHz() const { return noise_bw_hz_; }
 
 private:
     Config cfg_;
     bool passthrough_ = true;
+    double noise_bw_hz_ = 0.0;
     bool use_st1_ = false;
     // NCO as a table of one full period when f_if / fs_in is a ratio with a
     // small denominator, else a renormalized recursive phasor.

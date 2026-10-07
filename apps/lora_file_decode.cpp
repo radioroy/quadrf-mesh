@@ -2,16 +2,17 @@
 //
 //   lora_file_decode cap.cf32 --rate 8e6 --if-khz 500
 //
-// --rate > 1e6 runs the PHY Ddc (mix by -if, channel filter, decimate to
-// 1 Msps) in front of the Receiver; --rate 1e6 feeds the file as-is, which is
-// the legacy driver-decimated path. Beacon payloads (lora_beacon) are checked
-// and counted by sequence number.
+// Runs the PHY receive chain: Ddc (mix by -if, rxChannelFilter for the
+// preset, decimate to 2 x BW) then the Receiver. A file already at 2 x BW
+// with --if-khz 0 goes straight in. Beacon payloads (lora_beacon) are
+// checked and counted by sequence number.
 
 #include "beacon_payload.hpp"
 
 #include <phy/dsp/ddc.hpp>
 #include <phy/lora/presets.hpp>
 #include <phy/lora/receiver.hpp>
+#include <phy/lora/rx_chain.hpp>
 
 #include <algorithm>
 #include <cmath>
@@ -37,7 +38,7 @@ int main(int argc, char** argv) {
     std::string path = argv[1];
     double rate = 1e6;
     double if_khz = 0.0;
-    double pass_khz = 270.0, stop_khz = 330.0;
+    double pass_khz = -1.0, stop_khz = -1.0;  // default: rxChannelFilter
     std::string preset = "shortturbo";
     std::string dump_path;
     bool verbose = false;
@@ -75,13 +76,12 @@ int main(int argc, char** argv) {
     if (kp >= 0.0) params.timing_kp = kp;
     if (ki >= 0.0) params.timing_ki = ki;
     if (refine_gate > -900.0) params.refine_min_snr_db = refine_gate;
-    Ddc::Config dc;
-    dc.fs_in = rate;
-    dc.fs_out = params.sample_rate_hz;
-    dc.f_if = if_khz * 1e3;
-    dc.pass_hz = pass_khz * 1e3;
-    dc.stop_hz = stop_khz * 1e3;
+    params.sample_rate_hz = meshtasticRxRate(params);
+    Ddc::Config dc = rxChannelFilter(params, rate, if_khz * 1e3);
+    if (pass_khz > 0.0) dc.pass_hz = pass_khz * 1e3;
+    if (stop_khz > 0.0) dc.stop_hz = stop_khz * 1e3;
     Ddc ddc(dc);
+    params.rx_noise_bw_hz = ddc.noiseBandwidthHz();
     Receiver rx(params);
 
     FILE* f = std::fopen(path.c_str(), "rb");

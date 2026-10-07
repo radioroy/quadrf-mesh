@@ -5,6 +5,7 @@
 #include "QuadRFPingModule.h"
 #include "MeshService.h"
 #include "NodeDB.h"
+#include "main.h"
 #include "TransmitHistory.h"
 #include "gps/RTC.h"
 #include "modules/NodeInfoModule.h"
@@ -67,6 +68,7 @@ bool QuadRFRadio::init()
     RadioInterface::init();
     if (clearMeshtasticOverrideFrequency())
         RadioInterface::reconfigure();
+    applyPhyModemTiming();
     if (!connectSocket()) {
         LOG_ERROR("QuadRFRadio: connect %s failed: %s", socket_path_.c_str(), strerror(errno));
         return false;
@@ -103,33 +105,144 @@ bool QuadRFRadio::init()
     return true;
 }
 
-static uint8_t phyPresetFromMeshtastic()
+namespace
 {
-    switch (config.lora.modem_preset) {
-    case meshtastic_Config_LoRaConfig_ModemPreset_SHORT_FAST:
-        return quadrf::air_ipc::kPresetShortFast;
-    case meshtastic_Config_LoRaConfig_ModemPreset_SHORT_TURBO:
-        return quadrf::air_ipc::kPresetShortTurbo;
-    default:
-        LOG_WARN("QuadRFRadio: unsupported modem_preset %d; reverting to Short Turbo",
-                 static_cast<int>(config.lora.modem_preset));
-        config.lora.modem_preset = meshtastic_Config_LoRaConfig_ModemPreset_SHORT_TURBO;
-        if (nodeDB)
-            nodeDB->saveToDisk(SEGMENT_CONFIG);
-        return quadrf::air_ipc::kPresetShortTurbo;
+struct PhyPreset {
+    meshtastic_Config_LoRaConfig_ModemPreset preset;
+    uint8_t id;
+    float bw_khz;
+    uint8_t sf;
+    uint8_t cr; // 5..8, Meshtastic convention
+};
+
+// Air-IPC ids and the parameters the PHY runs for each (quadrf::air_ipc,
+// phy::lora::kMeshtasticPresetInfo). VERY_LONG_SLOW is deprecated upstream
+// and v2.7 modemPresetToParams() hands back LONG_FAST numbers for it; the
+// PHY keeps its last definition, so applyPhyModemTiming() overrides here.
+constexpr PhyPreset kPhyPresets[] = {
+    {meshtastic_Config_LoRaConfig_ModemPreset_SHORT_TURBO, quadrf::air_ipc::kPresetShortTurbo, 500.0f, 7, 5},
+    {meshtastic_Config_LoRaConfig_ModemPreset_SHORT_FAST, quadrf::air_ipc::kPresetShortFast, 250.0f, 7, 5},
+    {meshtastic_Config_LoRaConfig_ModemPreset_SHORT_SLOW, quadrf::air_ipc::kPresetShortSlow, 250.0f, 8, 5},
+    {meshtastic_Config_LoRaConfig_ModemPreset_MEDIUM_FAST, quadrf::air_ipc::kPresetMediumFast, 250.0f, 9, 5},
+    {meshtastic_Config_LoRaConfig_ModemPreset_MEDIUM_SLOW, quadrf::air_ipc::kPresetMediumSlow, 250.0f, 10, 5},
+    {meshtastic_Config_LoRaConfig_ModemPreset_LONG_FAST, quadrf::air_ipc::kPresetLongFast, 250.0f, 11, 5},
+    {meshtastic_Config_LoRaConfig_ModemPreset_LONG_MODERATE, quadrf::air_ipc::kPresetLongModerate, 125.0f, 11, 8},
+    {meshtastic_Config_LoRaConfig_ModemPreset_LONG_SLOW, quadrf::air_ipc::kPresetLongSlow, 125.0f, 12, 8},
+    {meshtastic_Config_LoRaConfig_ModemPreset_VERY_LONG_SLOW, quadrf::air_ipc::kPresetVeryLongSlow, 62.5f, 12, 8},
+    {meshtastic_Config_LoRaConfig_ModemPreset_LONG_TURBO, quadrf::air_ipc::kPresetLongTurbo, 500.0f, 11, 8},
+};
+
+const PhyPreset *phyPresetFor(meshtastic_Config_LoRaConfig_ModemPreset preset)
+{
+    for (const auto &p : kPhyPresets)
+        if (p.preset == preset)
+            return &p;
+    return nullptr;
+}
+
+const PhyPreset *phyPresetForParams(float bw_khz, uint8_t sf, uint8_t cr)
+{
+    for (const auto &p : kPhyPresets)
+        if (std::fabs(p.bw_khz - bw_khz) < 0.5f && p.sf == sf && p.cr == cr)
+            return &p;
+    return nullptr;
+}
+
+void revertToShortTurbo(const char *why, int value)
+{
+    LOG_WARN("QuadRFRadio: %s %d not supported by the PHY; reverting to Short Turbo", why, value);
+    config.lora.use_preset = true;
+    config.lora.modem_preset = meshtastic_Config_LoRaConfig_ModemPreset_SHORT_TURBO;
+    config.lora.coding_rate = 0;
+    if (nodeDB)
+        nodeDB->saveToDisk(SEGMENT_CONFIG);
+}
+} // namespace
+
+// Custom modem settings (use_preset = false) are accepted when they match a
+// preset the PHY implements; a custom coding rate on top of a preset is not.
+uint8_t QuadRFRadio::phyPresetFromMeshtastic()
+{
+    const PhyPreset *p = nullptr;
+    if (config.lora.use_preset) {
+        p = phyPresetFor(config.lora.modem_preset);
+        if (!p) {
+            revertToShortTurbo("modem_preset", static_cast<int>(config.lora.modem_preset));
+            RadioInterface::reconfigure();
+            return quadrf::air_ipc::kPresetShortTurbo;
+        }
+        if (config.lora.coding_rate >= 5 && config.lora.coding_rate <= 8 && config.lora.coding_rate != p->cr) {
+            // Clients write the whole LoRa config back on a preset change, so a
+            // coding_rate left over from a CR4/5 preset rides along onto the
+            // CR4/8 ones. Keep the preset and drop the override.
+            LOG_WARN("QuadRFRadio: custom coding_rate %u not supported by the PHY; using CR4/%u of the preset",
+                     static_cast<unsigned>(config.lora.coding_rate), static_cast<unsigned>(p->cr));
+            config.lora.coding_rate = 0;
+            if (nodeDB)
+                nodeDB->saveToDisk(SEGMENT_CONFIG);
+            RadioInterface::reconfigure();
+            return p->id;
+        }
+    } else {
+        p = phyPresetForParams(bw, sf, cr);
+        if (!p) {
+            revertToShortTurbo("custom sf", static_cast<int>(sf));
+            RadioInterface::reconfigure();
+            return quadrf::air_ipc::kPresetShortTurbo;
+        }
     }
+    return p->id;
+}
+
+void QuadRFRadio::applyPhyModemTiming()
+{
+    if (!config.lora.use_preset || config.lora.modem_preset != meshtastic_Config_LoRaConfig_ModemPreset_VERY_LONG_SLOW)
+        return;
+    const PhyPreset *p = phyPresetFor(config.lora.modem_preset);
+    bw = p->bw_khz;
+    sf = p->sf;
+    cr = p->cr;
+    slotTimeMsec = computeSlotTimeMsec();
+    preambleTimeMsec = static_cast<uint32_t>(preambleLength * ((1u << sf) / bw));
+    LOG_INFO("QuadRFRadio: VERY_LONG_SLOW as %.1f kHz SF%u CR4/%u; slot %u ms, preamble %u ms", bw, sf, cr,
+             slotTimeMsec, preambleTimeMsec);
+}
+
+// Same steps as the on-device preset menu (menuHandler): save, reconfigure,
+// and reboot so connected app / web clients reconnect and read the new config.
+void QuadRFRadio::applyPresetRequest()
+{
+    const int id = pending_preset_.exchange(-1);
+    const PhyPreset *p = nullptr;
+    for (const auto &e : kPhyPresets)
+        if (static_cast<int>(e.id) == id)
+            p = &e;
+    if (!p)
+        return;
+    if (config.lora.use_preset && config.lora.modem_preset == p->preset && config.lora.coding_rate == 0)
+        return;
+    LOG_INFO("QuadRFRadio: preset %u requested on the control socket; rebooting in %d s", static_cast<unsigned>(p->id),
+             DEFAULT_REBOOT_SECONDS);
+    config.lora.use_preset = true;
+    config.lora.modem_preset = p->preset;
+    config.lora.coding_rate = 0;
+    config.lora.channel_num = 0;
+    config.lora.override_frequency = 0;
+    service->reloadConfig(SEGMENT_CONFIG);
+    rebootAtMsec = millis() + DEFAULT_REBOOT_SECONDS * 1000;
 }
 
 void QuadRFRadio::pushModemToPhy()
 {
     quadrf::air_ipc::SetModem msg;
     msg.preset = phyPresetFromMeshtastic();
+    applyPhyModemTiming();
     std::vector<uint8_t> frame;
     if (!quadrf::air_ipc::encodeSetModem(msg, frame) || !writeFrame(frame)) {
         LOG_WARN("QuadRFRadio: SetModem preset=%u failed", static_cast<unsigned>(msg.preset));
         return;
     }
-    LOG_INFO("QuadRFRadio: SetModem preset=%u", static_cast<unsigned>(msg.preset));
+    LOG_INFO("QuadRFRadio: SetModem preset=%u (%.1f kHz SF%u CR4/%u)", static_cast<unsigned>(msg.preset), bw, sf, cr);
 }
 
 bool QuadRFRadio::reconfigure()
@@ -378,6 +491,8 @@ meshtastic_QueueStatus QuadRFRadio::getQueueStatus()
 
 void QuadRFRadio::onNotify(uint32_t notification)
 {
+    if (pending_preset_.load() >= 0)
+        applyPresetRequest();
     switch (notification) {
     case ISR_TX:
         handleTransmitInterrupt();
@@ -629,7 +744,9 @@ void QuadRFRadio::controlThreadMain()
                 }
                 uint32_t r = QuadRFPingModule::instance ? QuadRFPingModule::instance->getIntervalSec() : 0;
                 int p = (QuadRFParrotModule::instance && QuadRFParrotModule::instance->isEnabled()) ? 1 : 0;
-                reply = "RANGE=" + std::to_string(r) + " PARROT=" + std::to_string(p) + " CALLSIGN=" + getCallsign() + "\n";
+                const PhyPreset *mp = config.lora.use_preset ? phyPresetFor(config.lora.modem_preset) : nullptr;
+                reply = "RANGE=" + std::to_string(r) + " PARROT=" + std::to_string(p) + " PRESET=" +
+                        std::to_string(mp ? static_cast<int>(mp->id) : -1) + " CALLSIGN=" + getCallsign() + "\n";
             } else if (cmd.rfind("SET RANGE ", 0) == 0) {
                 uint32_t sec = static_cast<uint32_t>(std::strtoul(cmd.c_str() + 10, nullptr, 10));
                 if (QuadRFPingModule::instance) {
@@ -642,6 +759,21 @@ void QuadRFRadio::controlThreadMain()
                     QuadRFParrotModule::instance->setEnabled(en != 0);
                 }
                 reply = "OK PARROT=" + std::to_string(en ? 1 : 0) + "\n";
+            } else if (cmd.rfind("SET PRESET ", 0) == 0) {
+                char *end = nullptr;
+                const long id = std::strtol(cmd.c_str() + 11, &end, 10);
+                bool known = false;
+                for (const auto &e : kPhyPresets)
+                    known = known || static_cast<long>(e.id) == id;
+                if (end == cmd.c_str() + 11 || !known) {
+                    reply = "ERR preset\n";
+                } else {
+                    pending_preset_ = static_cast<int>(id);
+                    // One notification slot: post ISR_RX like the RX thread
+                    // does; its handler re-arms the TX timer it may replace.
+                    notify(ISR_RX, true);
+                    reply = "OK PRESET=" + std::to_string(id) + "\n";
+                }
             } else if (cmd.rfind("SET CALLSIGN ", 0) == 0) {
                 std::string new_call = cmd.substr(13);
                 while (!new_call.empty() && (new_call.back() == ' ' || new_call.back() == '\r' || new_call.back() == '\n')) {
