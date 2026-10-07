@@ -853,6 +853,26 @@ int main() {
                 check(rxMatches(frames, air), buf);
             }
         }
+
+        // PHY receives at 2*BW. The 1 Msps sweep above is os=16 for 62.5 kHz;
+        // the LDRO lattice walk and the buffer-front preamble join both show
+        // up more often at os=2. Several noise draws, since one seed is not
+        // the same bytes on every libstdc++.
+        LoraParams vls = meshtasticParams(MeshtasticPreset::kVeryLongSlow);
+        vls.sample_rate_hz = meshtasticRxRate(vls);
+        const Modulator vls_mod(vls);
+        const IQBuffer vls_frame = vls_mod.frame(encodeFrame(vls, air));
+        const size_t vls_sps = vls_mod.samplesPerSymbol();
+        const IQBuffer vls_pad = pad(vls_frame, 2 * vls_sps + 231, 3 * vls_sps);
+        char buf[96];
+        for (uint32_t seed = 0; seed < 8; ++seed) {
+            Receiver rx(vls);
+            const IQBuffer capture =
+                addNoise(applyCfo(vls_pad, 12700.0, vls.sample_rate_hz), 15.0, seed);
+            const auto frames = runReceiver(rx, capture, seed + 1);
+            std::snprintf(buf, sizeof(buf), "verylongslow os2 CFO +12700 Hz 15 dB seed %u", seed);
+            check(rxMatches(frames, air), buf);
+        }
     }
 
     // Full streaming chain near the SF7 cliff, soft vs hard on identical

@@ -105,7 +105,7 @@ Receiver::Receiver(const LoraParams& params) : params_(params), sym_(params) {
         // carrier has already turned.
         trk_beta_ = std::exp(-t_sym / 10e-3);
         joint_frac_ = std::min(1.0, 1.5e-3 / t_sym);
-        kf_q_ = params_.wander_irw_q * std::pow(t_sym, 5.0);
+        kf_q_ = wanderProcessQ(t_sym, params_.wander_irw_q, sigma_w_);
         step_tol_ = std::max(kMaxStepChips, 4.0 * sigma_w_);
         sync_tol_ = std::max(kSyncTolChips, 3.0 * sigma_w_);
         // Legendre order: a ramp is all a 1-2 ms symbol sees of the wander.
@@ -273,8 +273,17 @@ bool Receiver::stepSync() {
     const size_t fail_resume = found_abs_ + (span_syms - 2) * sps_;
 
     // --- iterative rate estimate from the preamble chip drift ---
-    const size_t back = std::min(found_abs_ - base_, static_cast<size_t>(sps_ / 2));
+    size_t back = std::min(found_abs_ - base_, static_cast<size_t>(sps_ / 2));
     origin_abs_ = found_abs_ - back;
+    // Catmull-Rom reads one sample before the window. A run that starts on
+    // the first buffered sample used to resample nothing and then skip the
+    // whole preamble span (SF12/62.5 kHz: 1.4 s), which drops the frame
+    // when a noise peak just before the preamble joins the run. step_tol_
+    // is hundreds of chips at SF12, so that join is a few percent.
+    if (origin_abs_ < base_ + 1) {
+        origin_abs_ = base_ + 1;
+        back = (found_abs_ > origin_abs_) ? found_abs_ - origin_abs_ : 0;
+    }
     total_ratio_ = 1.0;
     for (int iter = 0; iter < 3; ++iter) {
         double slope;
@@ -1457,7 +1466,7 @@ void Receiver::slipSearch(std::vector<std::vector<int>>& paths) const {
     // per path. Each path carries a cumulative slip o: symbol k's carrier
     // reads y + o_k and its value v - o_k.
     const double t_sym = static_cast<double>(n_chips_) / params_.bandwidth_hz;
-    const double q = params_.wander_irw_q * std::pow(t_sym, 5.0);
+    const double q = wanderProcessQ(t_sym, params_.wander_irw_q, sigma_w_);
     constexpr double kObsFloor = 0.03 * 0.03;  // point vs block-average model error, chips^2
     constexpr double kSlipCost = 6.0;          // chi^2 units per slip
     constexpr size_t kPaths = 48;

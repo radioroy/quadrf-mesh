@@ -67,6 +67,8 @@ struct LoraParams {
     // Integrated-random-walk intensity of the same wander, Hz^2/s^3: the
     // carrier's second derivative as white noise. The CW capture's second
     // differences give ~2e12 at 2-8 ms lags. Drives the frame-end slip search.
+    // wanderProcessQ caps one-symbol diffusion at wanderChipsPerSymbol; the
+    // raw intensity over an SF12 symbol is well past the LO spread.
     double wander_irw_q = 0.0;
 };
 

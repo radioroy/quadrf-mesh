@@ -24,6 +24,22 @@ inline double wanderChipsPerSymbol(double symbol_s, double rate_hz_per_s, double
     return (hz < cap_hz ? hz : cap_hz) * symbol_s;
 }
 
+// IRW intensity in chips^2/symbol^3. irw_hz is the CW second-difference
+// intensity (Hz^2/s^3) of d²f/dt². Over one symbol the carrier variance
+// grown by that process is q/3 chips^2. The 2-8 ms measurement, integrated
+// across an SF12/62.5 kHz symbol (65 ms), is ~14 kHz; the LO spread
+// saturates near sigma_w (~750 Hz). Leaving the intensity uncapped makes
+// the data Kalman follow thermal noise off the ±2 chip LDRO lattice.
+inline double wanderProcessQ(double symbol_s, double irw_hz, double sigma_w_chips) {
+    if (irw_hz <= 0.0 || symbol_s <= 0.0) {
+        return 0.0;
+    }
+    const double t2 = symbol_s * symbol_s;
+    const double q = irw_hz * t2 * t2 * symbol_s;
+    const double q_cap = 3.0 * sigma_w_chips * sigma_w_chips;
+    return q < q_cap ? q : q_cap;
+}
+
 // Legendre P_0..P_order at x in [-1, 1], and dP/dx.
 void legendreAt(double x, int order, double* p, double* dp);
 
