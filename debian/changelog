@@ -1,3 +1,9 @@
+quadrf-mesh (0.1.7-1) experimental; urgency=medium
+
+  * phy: Decode every Meshtastic preset through SF12
+
+ -- Roy C. Gross <61633595+radioroy@users.noreply.github.com>  Tue, 06 Oct 2026 22:53:47 -0700
+
 quadrf-mesh (0.1.6-1) experimental; urgency=medium
 
   * debian: Build ddc and synth offline tests before dh_auto_test
