@@ -545,8 +545,26 @@ int main(int argc, char* argv[]) {
         return 1;
     }
 
-    const int kWinWidth = 1060;
-    const int kWinHeight = 560;
+    // 8 px glyphs. HH:MM:SS.d is 80 px; the node id used to start on the next pixel.
+    const int kWinWidth = 920;
+    const int kWinHeight = 496;
+    const int kHeaderH = 32;
+    const int kTitleY = 6;
+    const int kBtnY = 40;
+    const int kBtnH = 36;
+    const int kSummaryY = 86;
+    const int kSummaryH = 60;
+    const int kLogY = 156;
+    const int kLogH = 328;
+    const int kColTime = 24;
+    const int kColFrom = 128;
+    const int kColTo = 272;
+    const int kColSnr = 368;
+    const int kColSir = 456;
+    const int kColLvl = 544;
+    const int kColCfo = 648;
+    const int kColLen = 736;
+    const int kColId = 792;
 
     SDL_Window* win = SDL_CreateWindow(
         "QuadRF Mesh Monitor",
@@ -577,14 +595,14 @@ int main(int argc, char* argv[]) {
     std::thread telemetry_th(telemetryClientThread, std::ref(state), sock_path);
     telemetry_th.detach();
 
-    Button btn_ble    = {20, 80, 105, 36, "BLE: OFF"};
-    Button btn_range  = {133, 80, 125, 36, "RANGE: OFF"};
-    Button btn_parrot = {266, 80, 54, 36, ""};
-    Button btn_clear  = {328, 80, 106, 36, "Clear Log"};
-    Button btn_preset = {667, 8, 210, 30, ""};
+    Button btn_ble    = {16, kBtnY, 105, kBtnH, "BLE: OFF"};
+    Button btn_range  = {129, kBtnY, 125, kBtnH, "RANGE: OFF"};
+    Button btn_parrot = {262, kBtnY, 54, kBtnH, ""};
+    Button btn_clear  = {324, kBtnY, 106, kBtnH, "Clear Log"};
+    Button btn_preset = {636, 4, 210, 24, ""};
     const int menu_x = btn_preset.x;
     const int menu_y = btn_preset.y + btn_preset.h + 2;
-    const int menu_w = 288;
+    const int menu_w = 268;
     const int menu_row_h = 22;
     bool menu_open = false;
     int menu_hover = -1;
@@ -696,11 +714,11 @@ int main(int argc, char* argv[]) {
         fillRect(ren, 0, 0, kWinWidth, kWinHeight, kBgColor);
 
         // Header Bar
-        fillRect(ren, 0, 0, kWinWidth, 68, kCardBg);
-        fillRect(ren, 0, 67, kWinWidth, 1, kCardBorder);
+        fillRect(ren, 0, 0, kWinWidth, kHeaderH, kCardBg);
+        fillRect(ren, 0, kHeaderH - 1, kWinWidth, 1, kCardBorder);
 
-        drawString(ren, 20, 16, "QUADRF MESH MONITOR", kTextPrimary);
-        drawString(ren, 185, 16, QUADRF_MESH_VERSION, kTextMuted);
+        drawString(ren, 16, kTitleY, "QUADRF MESH MONITOR", kTextPrimary);
+        drawString(ren, 176, kTitleY, QUADRF_MESH_VERSION, kTextMuted);
 
         std::string cur_call;
         std::string cur_preset;
@@ -722,36 +740,36 @@ int main(int argc, char* argv[]) {
             }
             preset_pending = -1;
         }
-        drawString(ren, 255, 16, "CALL:", kTextSecondary);
-        drawString(ren, 300, 16, cur_call, kAccentBlue);
+        drawString(ren, 240, kTitleY, "CALL:", kTextSecondary);
+        drawString(ren, 288, kTitleY, cur_call, kAccentBlue);
 
         // Status Badges in Header
-        int badge_x = 440;
-        drawString(ren, badge_x, 16, "TEL:", kTextSecondary);
+        drawString(ren, 400, kTitleY, "TEL:", kTextSecondary);
         if (state.telemetry_connected) {
-            drawString(ren, badge_x + 40, 16, "ONLINE", kStatusGreen);
+            drawString(ren, 436, kTitleY, "ONLINE", kStatusGreen);
         } else {
-            drawString(ren, badge_x + 40, 16, "WAITING", kStatusAmber);
+            drawString(ren, 436, kTitleY, "WAITING", kStatusAmber);
         }
 
-        drawString(ren, badge_x + 110, 16, "FREQ:", kTextSecondary);
-        drawString(ren, badge_x + 155, 16, "5800 MHz", kAccentBlue);
+        drawString(ren, 508, kTitleY, "FREQ:", kTextSecondary);
+        drawString(ren, 556, kTitleY, "5800 MHz", kAccentBlue);
 
         fillRect(ren, btn_preset.x, btn_preset.y, btn_preset.w, btn_preset.h,
                  (btn_preset.is_hovered || menu_open) ? kBtnHover : kCardBg);
         drawRect(ren, btn_preset.x, btn_preset.y, btn_preset.w, btn_preset.h,
                  preset_pending >= 0 ? kStatusAmber : kCardBorder);
-        drawString(ren, badge_x + 235, 16, "PRESET:", kTextSecondary);
+        drawString(ren, btn_preset.x + 8, kTitleY, "PRESET:", kTextSecondary);
         if (preset_pending >= 0) {
             phy::lora::MeshtasticPreset target = phy::lora::MeshtasticPreset::kShortTurbo;
             phy::lora::meshtasticPresetFromId(static_cast<uint8_t>(preset_pending), target);
-            drawString(ren, badge_x + 295, 16, "> " + presetDisplayName(target), kStatusAmber);
+            drawString(ren, btn_preset.x + 72, kTitleY, "> " + presetDisplayName(target), kStatusAmber);
         } else {
-            drawString(ren, badge_x + 295, 16, cur_preset, kTextPrimary);
+            drawString(ren, btn_preset.x + 72, kTitleY, cur_preset, kTextPrimary);
         }
-        drawString(ren, btn_preset.x + btn_preset.w - 14, 16, "v", kTextSecondary);
+        drawString(ren, btn_preset.x + btn_preset.w - 14, kTitleY, "v", kTextSecondary);
         if (!preset_note.empty() && now < preset_note_until) {
-            drawString(ren, btn_preset.x, 44, preset_note, kStatusRed);
+            const int note_x = kWinWidth - 16 - static_cast<int>(preset_note.size()) * 8;
+            drawString(ren, note_x, kBtnY + 10, preset_note, kStatusRed);
         }
 
         // Controls Area (Buttons)
@@ -774,11 +792,10 @@ int main(int argc, char* argv[]) {
 
         btn_clear.draw(ren, kTextSecondary, kCardBorder);
 
-        // Telemetry Summary Card (y: 130 to 195)
-        fillRect(ren, 20, 130, kWinWidth - 40, 65, kCardBg);
-        drawRect(ren, 20, 130, kWinWidth - 40, 65, kCardBorder);
+        fillRect(ren, 16, kSummaryY, kWinWidth - 32, kSummaryH, kCardBg);
+        drawRect(ren, 16, kSummaryY, kWinWidth - 32, kSummaryH, kCardBorder);
 
-        drawString(ren, 35, 142, "LAST DECODED PACKET", kTextSecondary);
+        drawString(ren, 32, kSummaryY + 8, "LAST DECODED PACKET", kTextSecondary);
 
         PacketRecord last_rec;
         bool has_pkt = false;
@@ -793,59 +810,58 @@ int main(int argc, char* argv[]) {
         if (has_pkt) {
             char buf[128];
             if (last_rec.is_echo) {
-                drawString(ren, 220, 142, "[SELF-TX ECHO]", kStatusAmber);
+                drawString(ren, 200, kSummaryY + 8, "[SELF-TX ECHO]", kStatusAmber);
             } else {
-                drawString(ren, 220, 142, "[PEER RX]", kStatusGreen);
+                drawString(ren, 200, kSummaryY + 8, "[PEER RX]", kStatusGreen);
             }
 
+            const int metric_y = kSummaryY + 32;
             std::string from_text = "From: " + formatNodeId(last_rec.from_node);
             if (last_rec.is_echo) {
                 from_text += " [SELF]";
             }
-            drawString(ren, 35, 165, from_text, last_rec.is_echo ? kTextMuted : kTextPrimary);
+            drawString(ren, 32, metric_y, from_text, last_rec.is_echo ? kTextMuted : kTextPrimary);
 
             snprintf(buf, sizeof(buf), "To: %s", formatNodeId(last_rec.to_node).c_str());
-            drawString(ren, 220, 165, buf, last_rec.is_echo ? kTextMuted : kTextPrimary);
+            drawString(ren, 216, metric_y, buf, last_rec.is_echo ? kTextMuted : kTextPrimary);
 
             snprintf(buf, sizeof(buf), "SNR: %+5.1f dB", last_rec.snr_db);
-            drawString(ren, 345, 165, buf, snrColor(last_rec.snr_db, cur_sf, last_rec.is_echo));
+            drawString(ren, 336, metric_y, buf, snrColor(last_rec.snr_db, cur_sf, last_rec.is_echo));
 
             char sir_buf[16];
             formatSir(sir_buf, sizeof(sir_buf), last_rec.sir_db);
             snprintf(buf, sizeof(buf), "SIR: %s dB", sir_buf);
-            drawString(ren, 490, 165, buf, sirColor(last_rec.sir_db, last_rec.is_echo));
+            drawString(ren, 464, metric_y, buf, sirColor(last_rec.sir_db, last_rec.is_echo));
 
             snprintf(buf, sizeof(buf), "LVL: %+5.1f dBFS", last_rec.lvl_dbfs);
-            drawString(ren, 635, 165, buf, last_rec.is_echo ? kTextMuted : kTextPrimary);
+            drawString(ren, 592, metric_y, buf, last_rec.is_echo ? kTextMuted : kTextPrimary);
 
             snprintf(buf, sizeof(buf), "CFO: %+5d Hz", last_rec.cfo_hz);
-            drawString(ren, 800, 165, buf, last_rec.is_echo ? kTextMuted : kTextPrimary);
+            drawString(ren, 736, metric_y, buf, last_rec.is_echo ? kTextMuted : kTextPrimary);
         } else {
-            drawString(ren, 35, 165, "Awaiting physical layer frame decodes...", kTextMuted);
+            drawString(ren, 32, kSummaryY + 32, "Awaiting physical layer frame decodes...", kTextMuted);
         }
 
         char count_buf[64];
         snprintf(count_buf, sizeof(count_buf), "Total: %llu", static_cast<unsigned long long>(total_pkts));
-        drawString(ren, kWinWidth - 145, 142, count_buf, kAccentBlue);
+        drawString(ren, kWinWidth - 140, kSummaryY + 8, count_buf, kAccentBlue);
 
-        // Recent Packet Log Card (y: 205 to 540)
-        fillRect(ren, 20, 205, kWinWidth - 40, 335, kCardBg);
-        drawRect(ren, 20, 205, kWinWidth - 40, 335, kCardBorder);
+        fillRect(ren, 16, kLogY, kWinWidth - 32, kLogH, kCardBg);
+        drawRect(ren, 16, kLogY, kWinWidth - 32, kLogH, kCardBorder);
 
-        // Table Header
-        fillRect(ren, 21, 206, kWinWidth - 42, 28, kHeaderBg);
-        fillRect(ren, 21, 234, kWinWidth - 42, 1, kCardBorder);
+        fillRect(ren, 17, kLogY + 1, kWinWidth - 34, 26, kHeaderBg);
+        fillRect(ren, 17, kLogY + 27, kWinWidth - 34, 1, kCardBorder);
 
-        drawString(ren, 30, 212, "TIME", kTextSecondary);
-        drawString(ren, 110, 212, "FROM NODE", kTextSecondary);
-        drawString(ren, 240, 212, "TO NODE", kTextSecondary);
-        drawString(ren, 330, 212, "SNR (dB)", kTextSecondary);
-        drawString(ren, 412, 212, "SIR (dB)", kTextSecondary);
-        drawString(ren, 494, 212, "LVL (dBFS)", kTextSecondary);
-        drawString(ren, 596, 212, "CFO (Hz)", kTextSecondary);
-        drawString(ren, 688, 212, "RATE (ppm)", kTextSecondary);
-        drawString(ren, 790, 212, "LEN", kTextSecondary);
-        drawString(ren, 838, 212, "PACKET ID", kTextSecondary);
+        const int col_y = kLogY + 6;
+        drawString(ren, kColTime, col_y, "TIME", kTextSecondary);
+        drawString(ren, kColFrom, col_y, "FROM NODE", kTextSecondary);
+        drawString(ren, kColTo, col_y, "TO NODE", kTextSecondary);
+        drawString(ren, kColSnr, col_y, "SNR (dB)", kTextSecondary);
+        drawString(ren, kColSir, col_y, "SIR (dB)", kTextSecondary);
+        drawString(ren, kColLvl, col_y, "LVL (dBFS)", kTextSecondary);
+        drawString(ren, kColCfo, col_y, "CFO (Hz)", kTextSecondary);
+        drawString(ren, kColLen, col_y, "LEN", kTextSecondary);
+        drawString(ren, kColId, col_y, "PACKET ID", kTextSecondary);
 
         // Table Rows
         std::vector<PacketRecord> snap_packets;
@@ -856,7 +872,7 @@ int main(int argc, char* argv[]) {
 
         int start_idx = state.scroll_offset;
         int max_visible = 14;
-        int y_row = 242;
+        int y_row = kLogY + 34;
 
         if (snap_packets.empty()) {
             drawString(ren, 35, y_row + 10, "No packets received yet. Mesh PHY is listening on 5800 MHz...", kTextMuted);
@@ -871,40 +887,36 @@ int main(int argc, char* argv[]) {
                 Color sir_c  = sirColor(p.sir_db, p.is_echo);
                 Color lvl_c  = p.is_echo ? kTextMuted : kTextPrimary;
                 Color cfo_c  = p.is_echo ? kTextMuted : kTextPrimary;
-                Color rate_c = p.is_echo ? kTextMuted : kTextSecondary;
                 Color len_c  = p.is_echo ? kTextMuted : kTextSecondary;
                 Color id_c   = p.is_echo ? kTextMuted : kAccentBlue;
 
-                drawString(ren, 30, y_row, p.time_str, time_c);
+                drawString(ren, kColTime, y_row, p.time_str, time_c);
 
                 std::string from_str = formatNodeId(p.from_node);
                 if (p.is_echo) {
                     from_str += " [SELF]";
                 }
-                drawString(ren, 110, y_row, from_str, from_c);
-                drawString(ren, 240, y_row, formatNodeId(p.to_node), to_c);
+                drawString(ren, kColFrom, y_row, from_str, from_c);
+                drawString(ren, kColTo, y_row, formatNodeId(p.to_node), to_c);
 
                 char buf[64];
                 snprintf(buf, sizeof(buf), "%+5.1f", p.snr_db);
-                drawString(ren, 330, y_row, buf, snr_c);
+                drawString(ren, kColSnr, y_row, buf, snr_c);
 
                 formatSir(buf, sizeof(buf), p.sir_db);
-                drawString(ren, 412, y_row, buf, sir_c);
+                drawString(ren, kColSir, y_row, buf, sir_c);
 
                 snprintf(buf, sizeof(buf), "%+5.1f", p.lvl_dbfs);
-                drawString(ren, 494, y_row, buf, lvl_c);
+                drawString(ren, kColLvl, y_row, buf, lvl_c);
 
                 snprintf(buf, sizeof(buf), "%+5d", p.cfo_hz);
-                drawString(ren, 596, y_row, buf, cfo_c);
-
-                snprintf(buf, sizeof(buf), "%+4.1f", p.rate_ppm);
-                drawString(ren, 688, y_row, buf, rate_c);
+                drawString(ren, kColCfo, y_row, buf, cfo_c);
 
                 snprintf(buf, sizeof(buf), "%3u", p.payload_len);
-                drawString(ren, 790, y_row, buf, len_c);
+                drawString(ren, kColLen, y_row, buf, len_c);
 
                 snprintf(buf, sizeof(buf), "0x%08x", p.packet_id);
-                drawString(ren, 838, y_row, buf, id_c);
+                drawString(ren, kColId, y_row, buf, id_c);
 
                 y_row += 20;
             }

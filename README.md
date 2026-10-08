@@ -98,7 +98,7 @@ meshtastic --host 127.0.0.1:4403 --set lora.modem_preset LONG_FAST
 
 The `PRESET:` badge in Mesh Monitor does the same from the desktop: it saves the preset in meshtasticd, which applies it and restarts so the web and phone clients reconnect with the new setting. Each node is switched on its own; set every node in the mesh to the same preset.
 
-The RATE (ppm) value reported with each frame is the receiver's timing-loop sample-clock correction, not a clock-offset measurement: preamble drift on the short presets is dominated by LO wander, and the long presets do not estimate it (0). QuadRF-to-QuadRF offsets measured from captures are about −7 to −14 ppm.
+Mesh Monitor does not show sample-clock rate. That timing-loop correction is not a clock-offset measurement: preamble drift on the short presets is dominated by LO wander, and the long presets do not estimate it (0). QuadRF-to-QuadRF offsets measured from captures are about −7 to −14 ppm.
 
 Measured between two QuadRFs at 5.8 GHz, TX gain 0, both directions: Short Turbo through Long Fast and Long Turbo deliver 85 to 100 % of beacon frames and nearly every mesh text; Long Moderate about 60 to 100 %. Long Slow and Very Long Slow acquire and decode the header but the payload CRC fails. The two units' LOs wander against each other by about 800 Hz RMS (swings of ±1 kHz over 10 to 30 ms), which is tens of chips within one SF12 symbol. The receiver tracks it across symbol boundaries; with the transmitted symbols known, the boundary carrier step can only be estimated to about 0.85 chip RMS at 15 dB, roughly 3 % of symbols outside the ±2-chip LDRO decision window, and the tracker still has heavier tails than that. A shared reference or a quieter LO is the fix for SF12 at 125 kHz and below.
 
