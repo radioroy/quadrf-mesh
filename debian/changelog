@@ -1,3 +1,9 @@
+quadrf-mesh (0.1.10-1) experimental; urgency=medium
+
+  * debian: Match Mesh icon to QuadRF app icon theme
+
+ -- Roy C. Gross <61633595+radioroy@users.noreply.github.com>  Wed, 14 Oct 2026 02:10:09 -0700
+
 quadrf-mesh (0.1.9-1) experimental; urgency=medium
 
   * monitor: Separate time from the node id and drop the rate column
